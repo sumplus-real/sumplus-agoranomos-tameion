@@ -1,0 +1,10 @@
+.deployer.env
+.agent.env
+.verifier.env
+.env
+.env.*
+node_modules/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/lib/
