@@ -71,8 +71,8 @@ async function main() {
   console.log(`verifier on chain ${onchainVerifier}`);
 
   console.log("\n1. Setup (owner)");
-  if ((await usdc(SETTLEMENT_ADDRESS)) < 1_500_000n) {
-    await ownerTx("fund contract with 2 USDC", { address: ARC_USDC, abi: ERC20_ABI, functionName: "transfer", args: [SETTLEMENT_ADDRESS, 2_000_000n] });
+  if ((await usdc(SETTLEMENT_ADDRESS)) < 500_000n) {
+    await ownerTx("fund contract with 1 USDC", { address: ARC_USDC, abi: ERC20_ABI, functionName: "transfer", args: [SETTLEMENT_ADDRESS, 1_000_000n] });
   }
   // Two allowlisted payees, so that pointing a real signature at the second
   // one can only be stopped by the signature, not by the allowlist.
@@ -120,11 +120,11 @@ async function main() {
   if (local !== chain) throw new Error("the off-chain and on-chain digests disagree");
 
   const results: { name: string; expected: string; got: string }[] = [];
-  const expectRefusal = async (name: string, expected: string, a: Attestation, sig: Hex, amount: bigint) => {
-    const r = await simulate({ attestation: a, signature: sig, amountMicro: amount, reasoning: name }, agentAddress);
+  const expectRefusal = async (name: string, expected: string, a: Attestation, sig: Hex, amount: bigint, intentSeq = 0n) => {
+    const r = await simulate({ attestation: a, signature: sig, amountMicro: amount, intentSeq, reasoning: name }, agentAddress);
     const got = r && r.status === "refused_by_contract" ? r.error : "not refused";
     results.push({ name, expected, got });
-    console.log(`  ${got === expected ? "refused" : "WRONG"}: ${name} → ${got}`);
+    console.log(`  ${got === expected ? "ok" : "WRONG"}: ${name} → ${got}`);
   };
 
   console.log("\n3. Attacks, before any payment");
@@ -135,9 +135,9 @@ async function main() {
   await expectRefusal("swapped payee: a real signature pointed at another allowlisted address", "ForgedAttestation", { ...attestation, payee: SECOND_PAYEE }, signature, 500_000n);
   await expectRefusal("inflated amount: more than the verifier's ceiling", "ExceedsAttestedMaximum", attestation, signature, 600_000n);
 
-  console.log("\n4. One honest settlement, submitted by the agent");
+  console.log("\n4. A partial payment, submitted by the agent as intent 0");
   const before = await usdc(PAYEE);
-  const sent = await submit({ attestation, signature, amountMicro: 500_000n, reasoning: "mechanism test: refund the repeated order" });
+  const sent = await submit({ attestation, signature, amountMicro: 200_000n, intentSeq: 0n, reasoning: "mechanism test: first part of the refund" });
   if (sent.status !== "settled_or_escalated") throw new Error(`the honest settlement was refused: ${sent.error}`);
   const after = await usdc(PAYEE);
   console.log(`  tx ${sent.txHash} in block ${sent.blockNumber}`);
@@ -146,11 +146,20 @@ async function main() {
   console.log(`  contract records ${fmt(paid as bigint)} paid against this case`);
 
   console.log("\n5. Attacks, after the payment");
-  await expectRefusal("retry: the same case submitted again", "ExceedsAttestedMaximum", attestation, signature, 500_000n);
+  // The one the ceiling cannot catch: 0.2 paid against a ceiling of 0.5,
+  // and the same intent retried for 0.2 would still be under it.
+  await expectRefusal("partial retry: intent 0 again, still under the ceiling", "IntentAlreadyUsed", attestation, signature, 200_000n, 0n);
+  // Control: the same 0.2 under a fresh intent number goes through the
+  // simulation, so the refusal above comes from the intent rule, not the ceiling.
+  await expectRefusal("control: the same 0.2 as a new intent is allowed", "not refused", attestation, signature, 200_000n, 1n);
+  await expectRefusal("new intent asking past the ceiling", "ExceedsAttestedMaximum", attestation, signature, 400_000n, 1n);
+  const next = await publicClient.readContract({ address: SETTLEMENT_ADDRESS, abi: SETTLEMENT_ABI, functionName: "nextIntent", args: [attestation.caseId] });
+  console.log(`  next intent number for this case: ${next}`);
+  if (next !== 1n || paid !== 200_000n) throw new Error(`unexpected state: nextIntent ${next}, paid ${paid}`);
 
   const wrong = results.filter((r) => r.got !== r.expected);
-  console.log(`\n${results.length - wrong.length}/${results.length} attacks refused for the expected reason; payee received ${fmt(after - before)}.`);
-  if (wrong.length || after - before !== 500_000n) process.exit(1);
+  console.log(`\n${results.length - wrong.length}/${results.length} checks gave the expected answer; payee received ${fmt(after - before)}.`);
+  if (wrong.length || after - before !== 200_000n) process.exit(1);
 }
 
 main().catch((e) => {

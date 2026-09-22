@@ -22,7 +22,12 @@ current rule version and an expiry. It records what each case has paid, counts a
 spending across cases so a payment cannot be split under the threshold, and treats a zero
 budget as a stop.
 
-Deployed on Arc testnet (chain 5042002): `0x8D38dbaD863f7BF2b32fC227243a5092aFad90E6`.
+Every payment is one intent with a sequence number per case. The contract runs each number
+once, so a retried payment is refused even when case-paid-so-far plus the retry would still be
+under the ceiling (pay 3 of 10, retry the same 3: refused with `IntentAlreadyUsed`). A second,
+deliberate partial payment takes the next number and still has to fit under the ceiling.
+
+Deployed on Arc testnet (chain 5042002): `0xc8e1dc15F42c04EaF5Eab03C5A82C8Abc4aB01d2`.
 
 ## Evidence
 
@@ -42,6 +47,22 @@ npx tsx scripts/live-e2e.ts      # Arc testnet; needs the three key files, see b
 
 Key files (`.deployer.env`, `.agent.env`, `.verifier.env`) are local and ignored by git. The
 agent's code never reads the verifier's file; a test fails if it does.
+
+## Current boundaries
+
+- Key isolation today is the same machine, different processes. The agent and the verifier
+  are separate programs reading separate key files, and the contract only accepts the
+  verifier's signature. They are not yet separate system identities: a process running as the
+  same OS user could read both files.
+- The decision log is a hash chain. It shows any edit to an entry that is followed by later
+  entries, but whoever holds the whole file can rewrite the whole chain consistently.
+
+## After kickoff
+
+- Real key isolation: run the verifier under its own OS user or host, with the key file
+  readable only by that identity.
+- Anchor the decision log: write the chain head to Arc on a fixed schedule, so a rewrite of the
+  whole log no longer matches the heads already on chain.
 
 ## Starting point
 

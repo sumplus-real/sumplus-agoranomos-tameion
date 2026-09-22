@@ -37,6 +37,7 @@ contract AgoranomosSettlement {
     }
 
     struct Pending {
+        uint256 intentSeq;
         address payee;
         uint256 amount;
         bytes32 evidenceHash;
@@ -83,6 +84,12 @@ contract AgoranomosSettlement {
     /// Paid so far against each case. A case can be paid in parts, never
     /// past the maximum its attestation allows.
     mapping(bytes32 => uint256) public paid;
+    /// The sequence number the next payment against each case must carry.
+    /// Every payment is one intent; an intent executes once. A retry of an
+    /// intent that already ran carries a number that is no longer next, and
+    /// is refused. The ceiling alone cannot do this: paying 3 against a
+    /// ceiling of 10 and then retrying the same 3 stays under it both times.
+    mapping(bytes32 => uint256) public nextIntent;
     mapping(uint256 => uint256) public spentInPeriod;
     mapping(uint256 => mapping(address => uint256)) public payeeSpentInPeriod;
     mapping(bytes32 => Pending) public pending;
@@ -94,6 +101,7 @@ contract AgoranomosSettlement {
     event Settled(
         bytes32 indexed caseId,
         address indexed payee,
+        uint256 intentSeq,
         uint256 amount,
         uint256 paidToDate,
         bytes32 evidenceHash,
@@ -103,6 +111,7 @@ contract AgoranomosSettlement {
     event Escalated(
         bytes32 indexed caseId,
         address indexed payee,
+        uint256 intentSeq,
         uint256 amount,
         uint256 payeeSpentThisPeriod,
         bytes32 evidenceHash,
@@ -127,6 +136,7 @@ contract AgoranomosSettlement {
     error PayeeNotAllowed();
     error ExceedsAttestedMaximum(uint256 paidToDate, uint256 requested, uint256 maximum);
     error ExceedsPeriodBudget(uint256 spent, uint256 requested, uint256 budget);
+    error IntentAlreadyUsed(uint256 expected, uint256 given);
     error NothingPending();
     error ZeroAmount();
     error Reentrant();
@@ -236,13 +246,19 @@ contract AgoranomosSettlement {
     /// @notice The agent's only power. It proposes paying `amount` against a
     /// case the verifier has signed. The contract either pays it, parks it for
     /// a person, or refuses; the agent cannot choose which.
-    function settle(Attestation calldata a, bytes calldata signature, uint256 amount, bytes32 reasoningHash)
-        external
-        onlyAgent
-        nonReentrant
-    {
+    function settle(
+        Attestation calldata a,
+        bytes calldata signature,
+        uint256 amount,
+        uint256 intentSeq,
+        bytes32 reasoningHash
+    ) external onlyAgent nonReentrant {
         if (amount == 0) revert ZeroAmount();
         _verify(a, signature);
+
+        uint256 expected = nextIntent[a.caseId];
+        if (intentSeq != expected) revert IntentAlreadyUsed(expected, intentSeq);
+        nextIntent[a.caseId] = expected + 1;
 
         uint256 paidToDate = paid[a.caseId];
         if (paidToDate + amount > a.maxAmount) {
@@ -261,20 +277,21 @@ contract AgoranomosSettlement {
         uint256 payeeSpent = payeeSpentInPeriod[period][a.payee];
         if (payeeSpent + amount > escalationThreshold) {
             pending[a.caseId] = Pending({
+                intentSeq: intentSeq,
                 payee: a.payee,
                 amount: amount,
                 evidenceHash: a.evidenceHash,
                 reasoningHash: reasoningHash,
                 open: true
             });
-            emit Escalated(a.caseId, a.payee, amount, payeeSpent, a.evidenceHash, reasoningHash);
+            emit Escalated(a.caseId, a.payee, intentSeq, amount, payeeSpent, a.evidenceHash, reasoningHash);
             return;
         }
 
         spentInPeriod[period] = spent + amount;
         payeeSpentInPeriod[period][a.payee] = payeeSpent + amount;
         _pay(a.payee, amount);
-        emit Settled(a.caseId, a.payee, amount, paidToDate + amount, a.evidenceHash, ruleVersion, reasoningHash);
+        emit Settled(a.caseId, a.payee, intentSeq, amount, paidToDate + amount, a.evidenceHash, ruleVersion, reasoningHash);
     }
 
     /// @notice A person signs off a parked payment. The period budget still
@@ -292,11 +309,12 @@ contract AgoranomosSettlement {
         payeeSpentInPeriod[period][p.payee] += p.amount;
         _pay(p.payee, p.amount);
         emit Approved(caseId, msg.sender);
-        emit Settled(caseId, p.payee, p.amount, paid[caseId], p.evidenceHash, ruleVersion, p.reasoningHash);
+        emit Settled(caseId, p.payee, p.intentSeq, p.amount, paid[caseId], p.evidenceHash, ruleVersion, p.reasoningHash);
     }
 
     /// @notice A person declines a parked payment. The reservation against the
-    /// case is released, so a corrected proposal can be made.
+    /// case is released, so a corrected proposal can be made. The rejected
+    /// intent stays used; the correction is a new intent with the next number.
     function reject(bytes32 caseId) external onlyOwner {
         Pending memory p = pending[caseId];
         if (!p.open) revert NothingPending();

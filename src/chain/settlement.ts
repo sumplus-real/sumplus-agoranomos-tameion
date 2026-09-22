@@ -17,7 +17,7 @@ export const ARC_TESTNET = {
 export const ARC_USDC: Address = "0x3600000000000000000000000000000000000000";
 
 export const SETTLEMENT_ADDRESS: Address = (process.env.SETTLEMENT_ADDRESS ??
-  "0x8D38dbaD863f7BF2b32fC227243a5092aFad90E6") as Address;
+  "0xc8e1dc15F42c04EaF5Eab03C5A82C8Abc4aB01d2") as Address;
 
 export type Attestation = {
   caseId: Hex;
@@ -67,10 +67,12 @@ export const SETTLEMENT_ABI = [
       { name: "a", ...attestationTuple },
       { name: "signature", type: "bytes" },
       { name: "amount", type: "uint256" },
+      { name: "intentSeq", type: "uint256" },
       { name: "reasoningHash", type: "bytes32" },
     ],
     outputs: [],
   },
+  { type: "function", name: "nextIntent", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "uint256" }] },
   {
     type: "function",
     name: "attestationDigest",
@@ -108,6 +110,7 @@ export const SETTLEMENT_ABI = [
     name: "ExceedsPeriodBudget",
     inputs: [{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }],
   },
+  { type: "error", name: "IntentAlreadyUsed", inputs: [{ type: "uint256" }, { type: "uint256" }] },
   { type: "error", name: "NothingPending", inputs: [] },
   { type: "error", name: "ZeroAmount", inputs: [] },
   { type: "error", name: "Reentrant", inputs: [] },
@@ -118,6 +121,7 @@ export const SETTLEMENT_ABI = [
     inputs: [
       { name: "caseId", type: "bytes32", indexed: true },
       { name: "payee", type: "address", indexed: true },
+      { name: "intentSeq", type: "uint256", indexed: false },
       { name: "amount", type: "uint256", indexed: false },
       { name: "paidToDate", type: "uint256", indexed: false },
       { name: "evidenceHash", type: "bytes32", indexed: false },
@@ -131,6 +135,7 @@ export const SETTLEMENT_ABI = [
     inputs: [
       { name: "caseId", type: "bytes32", indexed: true },
       { name: "payee", type: "address", indexed: true },
+      { name: "intentSeq", type: "uint256", indexed: false },
       { name: "amount", type: "uint256", indexed: false },
       { name: "payeeSpentThisPeriod", type: "uint256", indexed: false },
       { name: "evidenceHash", type: "bytes32", indexed: false },

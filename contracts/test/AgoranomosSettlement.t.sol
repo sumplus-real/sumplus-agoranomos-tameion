@@ -66,7 +66,7 @@ contract AgoranomosSettlementTest is Test {
             maxAmount: maxAmount,
             ruleVersion: RULES,
             evidenceHash: keccak256(abi.encode("evidence", caseId)),
-            expiry: uint64(block.timestamp + 1 hours)
+            expiry: uint64(vm.getBlockTimestamp() + 1 hours)
         });
     }
 
@@ -75,9 +75,11 @@ contract AgoranomosSettlementTest is Test {
         return abi.encodePacked(r, s, v);
     }
 
+    /// An honest new payment: it carries the next intent number for its case.
     function _settle(AgoranomosSettlement.Attestation memory a, bytes memory sig, uint256 amount) internal {
+        uint256 seq = settlement.nextIntent(a.caseId);
         vm.prank(agent);
-        settlement.settle(a, sig, amount, keccak256("reasoning"));
+        settlement.settle(a, sig, amount, seq, keccak256("reasoning"));
     }
 
     // ------------------------------------------------------- happy path
@@ -105,7 +107,7 @@ contract AgoranomosSettlementTest is Test {
         bytes memory agentSig = _sign(agentKey, a);
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.ForgedAttestation.selector);
-        settlement.settle(a, agentSig, 40e6, bytes32(0));
+        settlement.settle(a, agentSig, 40e6, 0, bytes32(0));
         assertEq(usdc.balanceOf(supplier), 0);
     }
 
@@ -116,23 +118,71 @@ contract AgoranomosSettlementTest is Test {
         a.payee = tenant; // allowlisted, so only the signature can stop it
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.ForgedAttestation.selector);
-        settlement.settle(a, sig, 40e6, bytes32(0));
+        settlement.settle(a, sig, 40e6, 0, bytes32(0));
         assertEq(usdc.balanceOf(tenant), 0);
         assertEq(usdc.balanceOf(supplier), 0);
     }
 
-    /// A retry of a case that already paid in full is refused: the case
-    /// remembers what it paid, so a second submission cannot pay twice.
+    /// A retry of a payment that already ran is refused by its intent number.
     function test_attack_retryCannotPayTwice() public {
         AgoranomosSettlement.Attestation memory a = _att("case-5", supplier, 40e6);
         bytes memory sig = _sign(verifierKey, a);
         _settle(a, sig, 40e6);
         vm.prank(agent);
-        vm.expectRevert(
-            abi.encodeWithSelector(AgoranomosSettlement.ExceedsAttestedMaximum.selector, 40e6, 40e6, 40e6)
-        );
-        settlement.settle(a, sig, 40e6, bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(AgoranomosSettlement.IntentAlreadyUsed.selector, 1, 0));
+        settlement.settle(a, sig, 40e6, 0, bytes32(0));
         assertEq(usdc.balanceOf(supplier), 40e6, "paid exactly once");
+    }
+
+    /// The case the ceiling cannot catch: paying 3 against a ceiling of 10,
+    /// then retrying the same payment, stays under the ceiling both times.
+    /// Only the intent number stops the second one.
+    function test_attack_partialRetryUnderTheCeilingIsRefused() public {
+        AgoranomosSettlement.Attestation memory a = _att("case-5b", supplier, 10e6);
+        bytes memory sig = _sign(verifierKey, a);
+        vm.prank(agent);
+        settlement.settle(a, sig, 3e6, 0, bytes32(0));
+        assertEq(usdc.balanceOf(supplier), 3e6);
+
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgoranomosSettlement.IntentAlreadyUsed.selector, 1, 0));
+        settlement.settle(a, sig, 3e6, 0, bytes32(0));
+        assertEq(usdc.balanceOf(supplier), 3e6, "the retry paid nothing");
+        assertEq(settlement.paid("case-5b"), 3e6, "and reserved nothing");
+    }
+
+    /// A genuinely new partial payment against the same case carries the next
+    /// number and goes through, up to the ceiling.
+    function test_aSecondPartialPaymentIsANewIntent() public {
+        AgoranomosSettlement.Attestation memory a = _att("case-5c", supplier, 10e6);
+        bytes memory sig = _sign(verifierKey, a);
+        vm.prank(agent);
+        settlement.settle(a, sig, 3e6, 0, bytes32(0));
+        vm.prank(agent);
+        settlement.settle(a, sig, 3e6, 1, bytes32(0));
+        assertEq(usdc.balanceOf(supplier), 6e6);
+    }
+
+    /// The ceiling still holds on its own, for a new intent that asks too much.
+    function test_aNewIntentStillCannotPassTheCeiling() public {
+        AgoranomosSettlement.Attestation memory a = _att("case-5d", supplier, 10e6);
+        bytes memory sig = _sign(verifierKey, a);
+        vm.prank(agent);
+        settlement.settle(a, sig, 8e6, 0, bytes32(0));
+        vm.prank(agent);
+        vm.expectRevert(
+            abi.encodeWithSelector(AgoranomosSettlement.ExceedsAttestedMaximum.selector, 8e6, 3e6, 10e6)
+        );
+        settlement.settle(a, sig, 3e6, 1, bytes32(0));
+    }
+
+    /// Skipping ahead is refused too: intents run in order, one at a time.
+    function test_anIntentNumberFromTheFutureIsRefused() public {
+        AgoranomosSettlement.Attestation memory a = _att("case-5e", supplier, 10e6);
+        bytes memory sig = _sign(verifierKey, a);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgoranomosSettlement.IntentAlreadyUsed.selector, 0, 5));
+        settlement.settle(a, sig, 3e6, 5, bytes32(0));
     }
 
     /// Two submissions of the same case while the first waits for a person:
@@ -141,14 +191,19 @@ contract AgoranomosSettlementTest is Test {
         AgoranomosSettlement.Attestation memory a = _att("case-6", supplier, 150e6);
         bytes memory sig = _sign(verifierKey, a);
         _settle(a, sig, 150e6); // over the threshold, so it parks
-        (,,,, bool open) = settlement.pending("case-6");
+        (,,,,, bool open) = settlement.pending("case-6");
         assertTrue(open, "parked for a person");
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgoranomosSettlement.IntentAlreadyUsed.selector, 1, 0));
+        settlement.settle(a, sig, 150e6, 0, bytes32(0));
+        assertEq(usdc.balanceOf(supplier), 0, "nothing paid while it waits");
+        // And a new intent cannot go around the parked one either: its amount
+        // is already reserved against the case.
         vm.prank(agent);
         vm.expectRevert(
             abi.encodeWithSelector(AgoranomosSettlement.ExceedsAttestedMaximum.selector, 150e6, 150e6, 150e6)
         );
-        settlement.settle(a, sig, 150e6, bytes32(0));
-        assertEq(usdc.balanceOf(supplier), 0, "nothing paid while it waits");
+        settlement.settle(a, sig, 150e6, 1, bytes32(0));
     }
 
     /// Splitting one large payment into several cases, each under the
@@ -166,7 +221,7 @@ contract AgoranomosSettlementTest is Test {
         AgoranomosSettlement.Attestation memory c = _att(third, supplier, 45e6);
         _settle(c, _sign(verifierKey, c), 45e6);
         assertEq(usdc.balanceOf(supplier), 90e6, "third would reach 135, so it waits for a person");
-        (,,,, bool open) = settlement.pending(third);
+        (,,,,, bool open) = settlement.pending(third);
         assertTrue(open);
     }
 
@@ -175,10 +230,10 @@ contract AgoranomosSettlementTest is Test {
     function test_expiredAttestationIsRefused() public {
         AgoranomosSettlement.Attestation memory a = _att("case-7", supplier, 40e6);
         bytes memory sig = _sign(verifierKey, a);
-        vm.warp(block.timestamp + 2 hours);
+        vm.warp(vm.getBlockTimestamp() + 2 hours);
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.AttestationExpired.selector);
-        settlement.settle(a, sig, 40e6, bytes32(0));
+        settlement.settle(a, sig, 40e6, 0, bytes32(0));
     }
 
     function test_attestationUnderOldRulesIsRefused() public {
@@ -188,7 +243,7 @@ contract AgoranomosSettlementTest is Test {
         settlement.setRuleVersion(keccak256("rules-v2"));
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.WrongRuleVersion.selector);
-        settlement.settle(a, sig, 40e6, bytes32(0));
+        settlement.settle(a, sig, 40e6, 0, bytes32(0));
     }
 
     function test_payeeOutsideTheAllowlistIsRefused() public {
@@ -196,7 +251,7 @@ contract AgoranomosSettlementTest is Test {
         bytes memory sig = _sign(verifierKey, a);
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.PayeeNotAllowed.selector);
-        settlement.settle(a, sig, 40e6, bytes32(0));
+        settlement.settle(a, sig, 40e6, 0, bytes32(0));
     }
 
     /// An attestation signed for another deployment of this contract does not
@@ -209,18 +264,61 @@ contract AgoranomosSettlementTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(verifierKey, other.attestationDigest(a));
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.ForgedAttestation.selector);
-        settlement.settle(a, abi.encodePacked(r, s, v), 40e6, bytes32(0));
+        settlement.settle(a, abi.encodePacked(r, s, v), 40e6, 0, bytes32(0));
     }
 
+    /// An attestation signed for the same contract address on another chain
+    /// does not verify here. The chain-1 digest is built from the EIP-712
+    /// formula in this test, independently of the contract.
     function test_attestationForAnotherChainIsRefused() public {
         AgoranomosSettlement.Attestation memory a = _att("case-11", supplier, 40e6);
-        uint256 home = block.chainid;
-        vm.chainId(1);
-        bytes memory sig = _sign(verifierKey, a);
-        vm.chainId(home);
+        bytes32 domainOnChainOne = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("AgoranomosSettlement"),
+                keccak256("1"),
+                uint256(1),
+                address(settlement)
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "Attestation(bytes32 caseId,address payee,address token,uint256 maxAmount,bytes32 ruleVersion,bytes32 evidenceHash,uint64 expiry)"
+                ),
+                a.caseId, a.payee, a.token, a.maxAmount, a.ruleVersion, a.evidenceHash, a.expiry
+            )
+        );
+        bytes32 digestOnChainOne = keccak256(abi.encodePacked("\x19\x01", domainOnChainOne, structHash));
+        assertTrue(digestOnChainOne != settlement.attestationDigest(a), "the two chains must hash differently");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(verifierKey, digestOnChainOne);
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.ForgedAttestation.selector);
-        settlement.settle(a, sig, 40e6, bytes32(0));
+        settlement.settle(a, abi.encodePacked(r, s, v), 40e6, 0, bytes32(0));
+    }
+
+    /// The same formula with this chain's id reproduces the contract's digest
+    /// exactly, which is what makes the test above meaningful.
+    function test_theIndependentDigestFormulaMatchesTheContract() public view {
+        AgoranomosSettlement.Attestation memory a = _att("case-11b", supplier, 40e6);
+        bytes32 domainHere = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("AgoranomosSettlement"),
+                keccak256("1"),
+                block.chainid,
+                address(settlement)
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "Attestation(bytes32 caseId,address payee,address token,uint256 maxAmount,bytes32 ruleVersion,bytes32 evidenceHash,uint64 expiry)"
+                ),
+                a.caseId, a.payee, a.token, a.maxAmount, a.ruleVersion, a.evidenceHash, a.expiry
+            )
+        );
+        assertEq(keccak256(abi.encodePacked("\x19\x01", domainHere, structHash)), settlement.attestationDigest(a));
     }
 
     function test_onlyTheAgentCanSettle() public {
@@ -228,7 +326,7 @@ contract AgoranomosSettlementTest is Test {
         bytes memory sig = _sign(verifierKey, a);
         vm.prank(verifier);
         vm.expectRevert(AgoranomosSettlement.NotAgent.selector);
-        settlement.settle(a, sig, 40e6, bytes32(0));
+        settlement.settle(a, sig, 40e6, 0, bytes32(0));
     }
 
     /// A budget of zero stops payments. It never means "no limit".
@@ -239,7 +337,7 @@ contract AgoranomosSettlementTest is Test {
         bytes memory sig = _sign(verifierKey, a);
         vm.prank(agent);
         vm.expectRevert(abi.encodeWithSelector(AgoranomosSettlement.ExceedsPeriodBudget.selector, 0, 1e6, 0));
-        settlement.settle(a, sig, 1e6, bytes32(0));
+        settlement.settle(a, sig, 1e6, 0, bytes32(0));
     }
 
     function test_periodBudgetCapsEveryoneTogether() public {
@@ -253,7 +351,7 @@ contract AgoranomosSettlementTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(AgoranomosSettlement.ExceedsPeriodBudget.selector, 40e6, 40e6, 60e6)
         );
-        settlement.settle(b, sigB, 40e6, bytes32(0));
+        settlement.settle(b, sigB, 40e6, 0, bytes32(0));
     }
 
     function test_theBudgetResetsNextPeriod() public {
@@ -261,7 +359,7 @@ contract AgoranomosSettlementTest is Test {
         settlement.setLimits(PERIOD, 40e6, THRESHOLD);
         AgoranomosSettlement.Attestation memory a = _att("case-16", supplier, 40e6);
         _settle(a, _sign(verifierKey, a), 40e6);
-        vm.warp(block.timestamp + PERIOD);
+        vm.warp(vm.getBlockTimestamp() + PERIOD);
         AgoranomosSettlement.Attestation memory b = _att("case-17", supplier, 40e6);
         _settle(b, _sign(verifierKey, b), 40e6);
         assertEq(usdc.balanceOf(supplier), 80e6);
@@ -308,7 +406,7 @@ contract AgoranomosSettlementTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(AgoranomosSettlement.ExceedsPeriodBudget.selector, 0, 150e6, 120e6)
         );
-        settlement.settle(a, sig, 150e6, bytes32(0));
+        settlement.settle(a, sig, 150e6, 0, bytes32(0));
     }
 
     function test_onlyTheOwnerApproves() public {
@@ -338,6 +436,6 @@ contract AgoranomosSettlementTest is Test {
         uint8 flippedV = v == 27 ? 28 : 27;
         vm.prank(agent);
         vm.expectRevert(AgoranomosSettlement.MalleableSignature.selector);
-        settlement.settle(a, abi.encodePacked(r, highS, flippedV), 40e6, bytes32(0));
+        settlement.settle(a, abi.encodePacked(r, highS, flippedV), 40e6, 0, bytes32(0));
     }
 }

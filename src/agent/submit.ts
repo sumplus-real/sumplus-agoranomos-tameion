@@ -37,6 +37,13 @@ export type Submission = {
   attestation: Attestation;
   signature: Hex;
   amountMicro: bigint;
+  /**
+   * Which payment against this case this is. Every payment is one intent and
+   * runs once; a retry of the same intent carries the same number and the
+   * contract refuses it. The number is part of the intent, so it has to be
+   * decided once and kept, not recomputed on retry.
+   */
+  intentSeq: bigint;
   /** Why the agent chose this amount. Only its hash goes on chain. */
   reasoning: string;
 };
@@ -61,7 +68,7 @@ export async function simulate(s: Submission, from: Address): Promise<SubmitOutc
       address: SETTLEMENT_ADDRESS,
       abi: SETTLEMENT_ABI,
       functionName: "settle",
-      args: [s.attestation, s.signature, s.amountMicro, reasoningHash(s.reasoning)],
+      args: [s.attestation, s.signature, s.amountMicro, s.intentSeq, reasoningHash(s.reasoning)],
       account: from,
     });
     return null;
@@ -90,7 +97,7 @@ export async function submit(s: Submission, key: Hex = loadAgentKey()): Promise<
     address: SETTLEMENT_ADDRESS,
     abi: SETTLEMENT_ABI,
     functionName: "settle",
-    args: [s.attestation, s.signature, s.amountMicro, reasoningHash(s.reasoning)],
+    args: [s.attestation, s.signature, s.amountMicro, s.intentSeq, reasoningHash(s.reasoning)],
   });
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
   return { status: "settled_or_escalated", txHash, blockNumber: receipt.blockNumber };

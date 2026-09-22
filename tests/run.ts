@@ -133,7 +133,7 @@ async function main() {
   console.log("5. Signing");
   const verifierKey = "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
   const verifierAddress = privateKeyToAccount(verifierKey).address;
-  const contract: Address = "0x8D38dbaD863f7BF2b32fC227243a5092aFad90E6";
+  const contract: Address = "0xc8e1dc15F42c04EaF5Eab03C5A82C8Abc4aB01d2";
   const token: Address = "0x3600000000000000000000000000000000000000";
   const rules: Hex = "0x49b5c5936b16ec2a73f5dd855c266a1270422828f0681571d35ba195f745aa2b";
   const out = await signCase({ record: base, registry, chainId: 5042002, contract, token, ruleVersion: rules, ttlSeconds: 3600, nowSeconds: 1_700_000_000 }, verifierKey);
