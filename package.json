@@ -6,7 +6,8 @@
   "license": "MIT",
   "scripts": {
     "test": "tsx tests/run.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "score:comparison": "tsx scripts/score-comparison.ts"
   },
   "dependencies": {
     "tsx": "^4.19.2",
