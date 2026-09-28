@@ -1,14 +1,15 @@
 # Sumplus Agoranomos
 
-An AI agent that settles a business's supplier bills and customer credits in USDC on Arc,
-paying only what an independent verifier has signed for, inside limits the agent cannot change.
+An evidence-driven settlement agent for supplier bills and customer credits in USDC on Arc.
+Its current policy is deterministic code. A separate verifier caps each proposed payment,
+and the contract enforces limits the agent cannot change.
 
 Built for the Tameion Agents Hackathon (Canteen × Circle).
 
 ## The problem
 
 Sumplus runs an AI gateway. It buys model and video capacity from upstream suppliers and
-resells it to tenants. Both sides of that business produce bills that do not match reality:
+resells it to tenants. Both sides can produce billing disputes that need evidence:
 
 - an upstream supplier charges twice for one request that was retried;
 - a video job is billed for more seconds than the file that came back actually contains;
@@ -93,6 +94,8 @@ npm test                          # offline; the network is removed for the run
 npm run test:import               # source integrity and provenance gates
 npm run test:fixed-probe          # static comparison policy
 npm run test:comparison           # paired-case scorer and bad-input checks
+npm run replay:evidence -- private-data/replay/manifest.json
+npm run demo                     # local review UI at http://127.0.0.1:4173
 
 cd contracts
 forge install foundry-rs/forge-std --no-git
@@ -158,7 +161,16 @@ published and the event branch is on `main`.
   duplicate rows increase a payment ceiling. This is an event-period safety improvement.
 - No event-period real-business case, business confirmation, or new Arc settlement has been
   verified yet. The earlier 0.2 test USDC payment was a pre-event mechanism test, not traction.
-- Remaining work: run all three policies on approved real records, obtain business review,
+- A local replay runner connects hashed private intake, all three policies, decision-log
+  verification, and the locked scorer. Historical records have their own cohort and cannot
+  enter the real-business cohort. The local UI labels historical replay separately from adoption.
+- Gateway settlement is a distinct fact type, never a supplier invoice. Matching gateway and
+  mirrored application costs are one evidence origin. A measured delivery without a supplier
+  invoice does not authorize supplier payment.
+- Repeated request hashes are only candidates. Verifier rules v2 require an explicit observed
+  business-intent confirmation before a duplicate refund. This local rule change has not been
+  activated by an owner rule-version transaction on the deployed testnet contract.
+- Remaining work: obtain business review,
   verify any testnet settlement, isolate the verifier under its own OS identity, and anchor the
   decision log externally.
 

@@ -52,6 +52,11 @@ function order(taskId: string, fingerprint: string, atMs: number, charged: numbe
   };
 }
 
+function confirmation(repeatedTaskId: string, outcome: "confirmed_duplicate" | "intentional_regeneration" | "unknown" = "confirmed_duplicate") {
+  return { kind: "duplicate_intent_assessment" as const, source: "synthetic-business-intent", ref: `confirmation:${repeatedTaskId}`,
+    intentId: "synthetic-intent-1", originalTaskId: "t1", repeatedTaskId, outcome };
+}
+
 async function main() {
   console.log("0. Offline");
   let blocked = false;
@@ -67,7 +72,7 @@ async function main() {
     caseId: caseIdFor(["dup", "job-1"]),
     kind: "duplicate_charge_refund",
     counterparty: "supplier:video-1",
-    observed: [order("t1", "fp-a", 1_000, 1_800_000), order("t2", "fp-a", 5_000, 1_800_000)],
+    observed: [order("t1", "fp-a", 1_000, 1_800_000), order("t2", "fp-a", 5_000, 1_800_000), confirmation("t2")],
     contract: [],
     inference: [],
   };
@@ -80,23 +85,32 @@ async function main() {
 
   console.log("2. Duplicate orders, observed");
   const dup = judge(base, registry);
-  check("two distinct orders with one fingerprint inside the window are a duplicate", dup.sign === true && dup.maxMicro === 1_800_000, JSON.stringify(dup).slice(0, 90));
+  check("a confirmed duplicate business intent permits only the repeated charge", dup.sign === true && dup.maxMicro === 1_800_000, JSON.stringify(dup).slice(0, 90));
   check("the refund goes to the registered address, not one the case names", dup.sign === true && dup.payee === SUPPLIER);
+  const unconfirmedFacts = base.observed.filter((f) => f.kind !== "duplicate_intent_assessment");
+  check("identical hashes within ten minutes without intent confirmation are refused", !judge({ ...base, observed: unconfirmedFacts }, registry).sign);
+  for (const outcome of ["intentional_regeneration", "unknown"] as const) {
+    check(`${outcome} cannot authorize a duplicate refund`, !judge({ ...base, observed: [...unconfirmedFacts, confirmation("t2", outcome)] }, registry).sign);
+  }
+  check("conflicting intent confirmations are refused", !judge({ ...base, observed: [...base.observed, { ...confirmation("t2", "intentional_regeneration"), ref: "other-source-row" }] }, registry).sign);
+  check("a confirmation for a missing order is refused", !judge({ ...base, observed: [...unconfirmedFacts, confirmation("unrelated-task")] }, registry).sign);
+  check("blank business intent cannot authorize a refund", !judge({ ...base, observed: [...unconfirmedFacts, { ...confirmation("t2"), intentId: " " }] }, registry).sign);
+  check("intent confirmation is committed in the evidence hash", evidenceHash(base, RULE_LABEL) !== evidenceHash({ ...base, observed: unconfirmedFacts }, RULE_LABEL));
   const single = judge({ ...base, observed: [base.observed[0]] }, registry);
   check("a single order is not a duplicate", single.sign === false);
   const sameTask = judge({ ...base, observed: [order("t1", "fp-a", 1_000, 1_800_000), order("t1", "fp-a", 2_000, 1_800_000)] }, registry);
   check("the same task id seen twice is one order, not two", sameTask.sign === false);
   const late = judge({ ...base, observed: [order("t1", "fp-a", 0, 1_800_000), order("t2", "fp-a", 11 * 60_000, 1_800_000)] }, registry);
   check("a repeat outside the window is treated as new work", late.sign === false);
-  const three = judge({ ...base, observed: [order("t1", "fp-a", 0, 1_000_000), order("t2", "fp-a", 1_000, 1_000_000), order("t3", "fp-a", 2_000, 1_000_000)] }, registry);
+  const three = judge({ ...base, observed: [order("t1", "fp-a", 0, 1_000_000), order("t2", "fp-a", 1_000, 1_000_000), order("t3", "fp-a", 2_000, 1_000_000), confirmation("t2"), confirmation("t3")] }, registry);
   check("every repeat after the first counts", three.sign === true && three.maxMicro === 2_000_000);
-  const repeatedRow = judge({ ...base, observed: [base.observed[0], base.observed[1], base.observed[1]] }, registry);
+  const repeatedRow = judge({ ...base, observed: [...base.observed, base.observed[1]] }, registry);
   check("the same observed repeat row cannot raise the refund ceiling twice", repeatedRow.sign === true && repeatedRow.maxMicro === 1_800_000);
   const unsafeCharge = judge({ ...base, observed: [base.observed[0], order("t2", "fp-a", 5_000, Number.MAX_SAFE_INTEGER + 1)] }, registry);
   check("an unsafe integer charge is never signed", unsafeCharge.sign === false);
   const invalidTimestamp = judge({ ...base, observed: [base.observed[0], order("t2", "fp-a", Number.NaN, 1_800_000)] }, registry);
   check("a nonfinite order timestamp cannot bypass the duplicate window", invalidTimestamp.sign === false);
-  const overflow = judge({ ...base, observed: [order("t1", "fp-a", 0, 1), order("t2", "fp-a", 1_000, Number.MAX_SAFE_INTEGER), order("t3", "fp-a", 2_000, 1)] }, registry);
+  const overflow = judge({ ...base, observed: [order("t1", "fp-a", 0, 1), order("t2", "fp-a", 1_000, Number.MAX_SAFE_INTEGER), order("t3", "fp-a", 2_000, 1), confirmation("t2"), confirmation("t3")] }, registry);
   check("an overflowing sum is never signed", overflow.sign === false);
   const unknown = judge({ ...base, counterparty: "supplier:nobody" }, registry);
   check("a counterparty with no registered address is refused", unknown.sign === false);
@@ -117,6 +131,11 @@ async function main() {
     contract: [],
     inference: [],
   };
+  const gatewayOnly: CaseRecord = { ...pay, observed: [
+    { kind: "gateway_settlement", source: "gateway-ledger", ref: "g1", jobRef: "j1", requestedSeconds: 5, reportedSeconds: 5, settledMicro: 500_000, originTime: "2026-09-20T00:00:00Z" },
+    { kind: "delivery_measured", source: "ffprobe", ref: "d1", jobRef: "j1", measuredSeconds: 5 },
+  ] };
+  check("gateway settlement and measured delivery do not impersonate a supplier invoice", !judge(gatewayOnly, registry).sign);
   const paid = judge(pay, registry);
   check("only the charge whose delivery matches is payable", paid.sign === true && paid.maxMicro === 500_000, paid.sign ? String(paid.maxMicro) : "");
   check("a short delivery is withheld and says by how much", paid.sign === true && paid.basis.some((b) => b.includes("withheld c2") && b.includes("5s")));
@@ -184,6 +203,8 @@ async function main() {
     const thisChain = hashTypedData({ domain: attestationDomain(5042002, contract), types: ATTESTATION_TYPES, primaryType: "Attestation", message: a });
     check("the same case hashes differently on another chain", otherChain !== thisChain);
   }
+  const unconfirmedSignature = await signCase({ record: { ...base, observed: unconfirmedFacts }, registry, chainId: 5042002, contract, token, ruleVersion: rules, ttlSeconds: 3600 }, verifierKey);
+  check("same-hash orders without business confirmation never produce a signature", !unconfirmedSignature.signed);
   const refused = await signCase({ record: { ...base, observed: [base.observed[0]] }, registry, chainId: 5042002, contract, token, ruleVersion: rules, ttlSeconds: 3600 }, verifierKey);
   check("a case the rules reject is not signed at all", refused.signed === false);
 
@@ -316,11 +337,11 @@ async function main() {
   check("without an executor the selected probe costs nothing and the case stays pending", pending.probesChosen.length === 1 && pending.probesExecuted === 0 && pending.probeSpentMicro === 0 && pending.proposals[0].action === "no_action");
 
   const third = order("t3", "fp-a", 6_000, 200_000);
-  const afterProbe: CaseRecord = { ...base, observed: [...base.observed, third] };
+  const afterProbe: CaseRecord = { ...base, observed: [...base.observed, third, confirmation("t3")] };
   const revisedLog = join(logDir, "revised.jsonl");
   const revisedDay = runDay({
     day: "2026-09-28", logPath: revisedLog, policy: adaptive, discrepancies: [openCase], probeOptions: [probe], hypotheses: competing.slice(0, 2), probeBudgetMicro: 10,
-    executeProbe: () => ({ status: "observed", caseId: base.caseId, addedFacts: [third], record: afterProbe,
+    executeProbe: () => ({ status: "observed", caseId: base.caseId, addedFacts: [third, confirmation("t3")], record: afterProbe,
       interval: { claim: "duplicate", lowMicro: 2_000_000, highMicro: 2_000_000, basis: "third observed order" },
       hypotheses: [{ ...competing[1], support: { low: 0.9, high: 1 } }], actualCostMicro: 8, reason: "third order found" }),
   });

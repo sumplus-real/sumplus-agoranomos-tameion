@@ -13,7 +13,7 @@ export type SourceArtifact = {
 };
 
 export type EvidenceBundle = {
-  status: "synthetic" | "self_test" | "business_unconfirmed" | "business_confirmed";
+  status: "synthetic" | "self_test" | "business_unconfirmed" | "business_confirmed" | "historical_replay";
   /** Private reference to the permission for using the records in this project. */
   authorizationRef?: string;
   /** Private reference to the business user's confirmation, if one exists. */
@@ -49,11 +49,12 @@ export function importEvidence(bundle: EvidenceBundle, baseDir: string): ImportR
   if (!bundle || !bundle.record || !Array.isArray(bundle.record.observed) || !Array.isArray(bundle.artifacts)) {
     return { ok: false, errors: ["missing record, observed facts, or artifacts"] };
   }
-  if (!/^(synthetic|self_test|business_unconfirmed|business_confirmed)$/.test(bundle.status)) errors.push("invalid evidence status");
-  if (bundle.status.startsWith("business") && !bundle.authorizationRef?.trim()) errors.push("business data requires an authorization reference");
+  if (!/^(synthetic|self_test|business_unconfirmed|business_confirmed|historical_replay)$/.test(bundle.status)) errors.push("invalid evidence status");
+  if ((bundle.status.startsWith("business") || bundle.status === "historical_replay") && !bundle.authorizationRef?.trim()) errors.push("business data requires an authorization reference");
   if (bundle.status === "business_confirmed" && !bundle.confirmationRef?.trim()) errors.push("confirmed business use requires a confirmation reference");
   if (!bundle.record.observed.length) errors.push("case has no observed facts");
   if (!/^0x[0-9a-fA-F]{64}$/.test(bundle.record.caseId)) errors.push("invalid case ID");
+  if (!["duplicate_charge_refund", "pay_undisputed", "tenant_credit_undelivered"].includes(bundle.record.kind)) errors.push("invalid case kind");
   if (!bundle.record.counterparty?.trim()) errors.push("missing counterparty");
 
   const byId = new Map<string, SourceArtifact>();
@@ -77,9 +78,13 @@ export function importEvidence(bundle: EvidenceBundle, baseDir: string): ImportR
 
   const refs = new Set<string>();
   for (const fact of bundle.record.observed as ObservedFact[]) {
+    if (!fact || !["upstream_order", "vendor_charge", "delivery_measured", "delivery_unmeasurable", "tenant_debit", "job_failed", "gateway_settlement", "duplicate_intent_assessment"].includes(fact.kind)) { errors.push("unknown observed fact kind"); continue; }
+    if (fact.kind === "gateway_settlement" && (!finiteNonnegative(fact.requestedSeconds) || !finiteNonnegative(fact.reportedSeconds) || !fact.jobRef?.trim())) errors.push(`${fact.ref}: invalid gateway duration or job reference`);
     if (!byId.has(fact.source)) errors.push(`${fact.ref}: source artifact ${fact.source} is missing`);
     if (!fact.ref?.trim() || refs.has(`${fact.source}:${fact.ref}`)) errors.push("empty or duplicate fact reference");
     refs.add(`${fact.source}:${fact.ref}`);
+    if ("settledMicro" in fact && (!Number.isSafeInteger(fact.settledMicro) || fact.settledMicro < 0)) errors.push(`${fact.ref}: invalid settledMicro`);
+    if ("originTime" in fact && !Number.isFinite(Date.parse(fact.originTime))) errors.push(`${fact.ref}: invalid original timestamp`);
     if ("chargedMicro" in fact && !positiveInt(fact.chargedMicro)) errors.push(`${fact.ref}: chargedMicro must be a positive safe integer`);
     if ("debitedMicro" in fact && !positiveInt(fact.debitedMicro)) errors.push(`${fact.ref}: debitedMicro must be a positive safe integer`);
     if ("submittedAtMs" in fact && !positiveInt(fact.submittedAtMs)) errors.push(`${fact.ref}: invalid submittedAtMs`);

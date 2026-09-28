@@ -2,6 +2,7 @@ import type { Address } from "viem";
 import type {
   CaseRecord,
   DeliveryMeasured,
+  DuplicateIntentAssessment,
   DeliveryUnmeasurable,
   JobFailed,
   ObservedFact,
@@ -12,7 +13,7 @@ import type {
 import { canonicalJson } from "../evidence/case.js";
 
 /**
- * The verifier's rules, version 1.
+ * The verifier's rules, version 2.
  *
  * These run in the verifier's process, not the agent's. They look only at the
  * observed layer of a case and work out, by themselves, the most that may be
@@ -23,11 +24,11 @@ import { canonicalJson } from "../evidence/case.js";
  * with the reason. A person picks it up from there.
  */
 
-export const RULE_LABEL = "agoranomos-rules-v1";
+export const RULE_LABEL = "agoranomos-rules-v2";
 
 /**
- * Two orders count as one piece of work submitted twice when they carry the
- * same request fingerprint within this window.
+ * Matching fingerprints within this window identify candidates only.
+ * A traceable business-intent assessment must separately confirm each repeat.
  */
 export const DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 
@@ -78,6 +79,22 @@ function duplicateCharge(record: CaseRecord, payee: Address): Verdict {
     }
     byTask.set(o.taskId, o);
   }
+  const assessments = uniqueRows(record.observed.filter((f): f is DuplicateIntentAssessment => f.kind === "duplicate_intent_assessment"));
+  if (!assessments) return { sign: false, reasons: ["conflicting duplicate intent assessment rows"] };
+  const intentByRepeat = new Map<string, DuplicateIntentAssessment>();
+  for (const a of assessments) {
+    if (![a.source, a.ref, a.intentId, a.originalTaskId, a.repeatedTaskId].every((v) => typeof v === "string" && v.trim().length > 0)
+      || !["confirmed_duplicate", "intentional_regeneration", "unknown"].includes(a.outcome)
+      || a.originalTaskId === a.repeatedTaskId
+      || !byTask.has(a.originalTaskId) || !byTask.has(a.repeatedTaskId)) {
+      return { sign: false, reasons: ["invalid or unbound duplicate intent assessment"] };
+    }
+    const previous = intentByRepeat.get(a.repeatedTaskId);
+    if (previous && (previous.originalTaskId !== a.originalTaskId || previous.intentId !== a.intentId || previous.outcome !== a.outcome)) {
+      return { sign: false, reasons: [`conflicting business intent for task ${a.repeatedTaskId}`] };
+    }
+    intentByRepeat.set(a.repeatedTaskId, a);
+  }
   const byFingerprint = new Map<string, UpstreamOrder[]>();
   for (const o of byTask.values()) {
     byFingerprint.set(o.requestFingerprint, [...(byFingerprint.get(o.requestFingerprint) ?? []), o]);
@@ -86,20 +103,23 @@ function duplicateCharge(record: CaseRecord, payee: Address): Verdict {
   let maxMicro = 0;
   const basis: string[] = [];
   for (const [fingerprint, group] of byFingerprint) {
-    const sorted = [...group].sort((a, b) => a.submittedAtMs - b.submittedAtMs);
+    const sorted = [...group].sort((a, b) => a.submittedAtMs - b.submittedAtMs || a.taskId.localeCompare(b.taskId));
     const distinctTasks = new Set(sorted.map((o) => o.taskId));
     if (distinctTasks.size < 2) continue;
     const first = sorted[0];
     for (const later of sorted.slice(1)) {
       if (later.taskId === first.taskId) continue;
       if (later.submittedAtMs - first.submittedAtMs > DUPLICATE_WINDOW_MS) continue;
+      const assessment = intentByRepeat.get(later.taskId);
+      if (!assessment || assessment.originalTaskId !== first.taskId || assessment.outcome !== "confirmed_duplicate") {
+        return { sign: false, reasons: [`business intent for ${later.taskId} repeating ${first.taskId} is not confirmed; matching fingerprints do not prove a duplicate charge`] };
+      }
       if (!Number.isSafeInteger(maxMicro + later.chargedMicro)) {
         return { sign: false, reasons: ["duplicate charge sum exceeds the safe integer range"] };
       }
-      // The first order is the one that was asked for. Every later one with
-      // the same fingerprint inside the window is the same work, paid again.
+      // Only the explicitly confirmed repeat contributes to the ceiling.
       maxMicro += later.chargedMicro;
-      basis.push(`${later.taskId} repeats ${first.taskId} (fingerprint ${fingerprint.slice(0, 12)}) and was charged ${later.chargedMicro}`);
+      basis.push(`${later.taskId} repeats ${first.taskId} for confirmed intent ${assessment.intentId} (fingerprint ${fingerprint.slice(0, 12)}) and was charged ${later.chargedMicro}`);
     }
   }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 const policies = ["fixed", "fixed_probe", "adaptive"] as const;
-const caseClasses = ["real_business", "self_test", "synthetic"] as const;
+const caseClasses = ["real_business", "self_test", "synthetic", "historical_replay"] as const;
 type Policy = (typeof policies)[number];
 type CaseClass = (typeof caseClasses)[number];
 type CaseDay = {
@@ -126,7 +126,7 @@ export function scoreComparison(value: unknown) {
 }
 
 const path = process.argv[2];
-if (path) {
+if (process.argv[1]?.endsWith("score-comparison.ts") && path) {
   const input: unknown = JSON.parse(readFileSync(path, "utf8"));
   process.stdout.write(`${JSON.stringify(scoreComparison(input), null, 2)}\n`);
 } else if (process.argv[1]?.endsWith("score-comparison.ts")) {

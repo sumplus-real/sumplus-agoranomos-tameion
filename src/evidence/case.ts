@@ -27,6 +27,31 @@ export type UpstreamOrder = {
   chargedMicro: number;
 };
 
+/** Business intent established from a traceable source, never inferred from a hash.
+ * Ingestion must authenticate that source before treating this as observed.
+ */
+export type DuplicateIntentAssessment = {
+  kind: "duplicate_intent_assessment";
+  source: string;
+  ref: string;
+  intentId: string;
+  originalTaskId: string;
+  repeatedTaskId: string;
+  outcome: "confirmed_duplicate" | "intentional_regeneration" | "unknown";
+};
+
+/** Gateway accounting observation, not an independent supplier invoice. */
+export type GatewaySettlement = {
+  kind: "gateway_settlement";
+  source: string;
+  ref: string;
+  jobRef: string;
+  requestedSeconds: number;
+  reportedSeconds: number;
+  settledMicro: number;
+  originTime: string;
+};
+
 /** A line on a supplier's bill for one piece of delivered work. */
 export type VendorCharge = {
   kind: "vendor_charge";
@@ -74,6 +99,8 @@ export type JobFailed = {
 
 export type ObservedFact =
   | UpstreamOrder
+  | DuplicateIntentAssessment
+  | GatewaySettlement
   | VendorCharge
   | DeliveryMeasured
   | DeliveryUnmeasurable
