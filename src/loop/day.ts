@@ -114,6 +114,8 @@ export type DayInput = {
 };
 
 export type DayResult = {
+  /** Final records actually observed on this policy path, in discrepancy order. */
+  observedRecords: (CaseRecord | null)[];
   proposals: Proposal[];
   probesChosen: ProbeOption[];
   probesExecuted: number;
@@ -305,6 +307,7 @@ export function runDay(input: DayInput): DayResult {
   }
 
   return {
+    observedRecords: cases.map(d => d.record ?? null),
     proposals,
     probesChosen: probes.chosen,
     probesExecuted: executed,

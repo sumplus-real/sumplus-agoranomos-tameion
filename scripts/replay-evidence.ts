@@ -48,7 +48,8 @@ export function replayEvidence(bundlePaths: string[], outputRoot: string) {
         executeProbe: () => ({ status: 'observed', caseId: record.caseId, addedFacts: measurements, record,
           actualCostMicro: 0, reason: 'Replay captured duration; missing supplier invoice remains unresolved' }),
       });
-      const verdict = judge(record, { [record.counterparty]: '0x0000000000000000000000000000000000000001' });
+      const observedRecord = result.observedRecords[0];
+      const verdict = observedRecord ? judge(observedRecord, { [record.counterparty]: '0x0000000000000000000000000000000000000001' }) : { sign: false as const, reasons: ['No complete record observed on this policy path'] };
       const proposal = result.proposals[0];
       // A candidate recommendation is not a resolved business case.
       const resolved = proposal.action !== 'no_action' && verdict.sign;

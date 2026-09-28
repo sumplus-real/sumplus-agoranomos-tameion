@@ -25,6 +25,13 @@ try {
   assert.deepEqual(report.score.cohorts[0].policies.map(s => s.evidence.probeCount), [0, 1, 1]);
   assert(report.logs.every(l => l.ok));
   assert(report.score.cohorts[0].policies.every(p => p.autonomousResolution.resolved === 0 && p.humanTime.missingRows === 1));
+  // Positive invoice fixture exposes look-ahead: fixed has not read the delivery.
+  const positive = structuredClone(bundle);
+  (positive.record.observed as any[]).push({ kind: 'vendor_charge', source: 'fixture', ref: 'independent-invoice', jobRef: 'job', billedSeconds: 6, chargedMicro: 123 });
+  writeFileSync(path, JSON.stringify(positive));
+  const positiveReport = replayEvidence([path], join(root, 'positive')).report;
+  assert.deepEqual(positiveReport.strategies.map(s => s.passed), [0, 1, 1], 'fixed must not see future probe facts');
+  assert.equal(positiveReport.strategies[0].decisions[0].verifierSign, false);
   assert.throws(() => replayEvidence([path,path], join(root, 'bad')), /duplicate case/);
   writeFileSync(join(root, 'source.json'), 'tampered');
   assert.throws(() => replayEvidence([path], join(root, 'bad')), /hash changed/);
