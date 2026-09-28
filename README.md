@@ -89,7 +89,10 @@ Requirements: Node 20+, Foundry, ffprobe (only for the video measurer).
 ```bash
 npm install
 npm run typecheck
-npm test                          # offline, 44 checks; the network is removed for the run
+npm test                          # offline; the network is removed for the run
+npm run test:import               # source integrity and provenance gates
+npm run test:fixed-probe          # static comparison policy
+npm run test:comparison           # paired-case scorer and bad-input checks
 
 cd contracts
 forge install foundry-rs/forge-std --no-git
@@ -114,18 +117,22 @@ contracts/test/                          Foundry tests: limits, attacks, control
 src/verifier/                            rules (v1) and signing, separate from the agent
 src/agent/submit.ts                      the agent's only way to move money
 src/evidence/case.ts                     case records and the evidence hash
+src/evidence/import.ts                   source-backed private case intake
 src/video/measure.ts                     ffprobe measurement; unmeasurable is its own result
-src/loop/                                daily loop and hash-chained decision log
+src/loop/                                three policies, daily loop, hash-chained decision log
 scripts/live-e2e.ts                      mechanism test on Arc testnet
+scripts/import-evidence.ts               validate a private source bundle
+scripts/score-comparison.ts              same-case three-policy score
 tests/run.ts                             offline checks
 ```
 
 ## Where the event starts
 
 This repository was started on 2026-09-23, before the Tameion window opened on 2026-09-27.
-Everything above existed at that date and is the baseline. The tag `tameion-start` marks it;
-work and usage after the tag are what we submit for judging, and the comparison
-`tameion-start...main` shows only that work.
+The deployed contract, verifier v1, video measurer, fixed daily loop, and mechanism test
+existed before the event. The tag `tameion-start` marks that baseline. The comparison
+`tameion-start...main` is intended to show only event-period work once the repository is
+published and the event branch is on `main`.
 
 ## Current boundaries
 
@@ -139,12 +146,21 @@ work and usage after the tag are what we submit for judging, and the comparison
   contract.
 - All settlement is in Arc testnet USDC. It discharges no real debt.
 
-## During the event
+## Event-period progress
 
-- Run the daily loop on real bills, with three strategies side by side on the same cases (fixed
-  check, fixed probe, adaptive) against comparison criteria committed at kickoff.
-- Real key isolation: the verifier under its own OS identity.
-- Anchor the decision log: write its chain head to Arc on a fixed schedule.
+- The prospective comparison criteria, paired-case scorer, fixed-probe control, and adaptive
+  policy are implemented. The adaptive policy is deterministic code, not an LLM. It selects
+  discriminating evidence within a budget and can reassess after a caller supplies a probe
+  result. No paid probe service is connected yet.
+- Private evidence intake checks source-file hashes and fact references, and keeps synthetic,
+  self-test, and business evidence labeled separately. See `eval/evidence-import.md`.
+- The verifier now rejects conflicting or repeated charge observations instead of letting
+  duplicate rows increase a payment ceiling. This is an event-period safety improvement.
+- No event-period real-business case, business confirmation, or new Arc settlement has been
+  verified yet. The earlier 0.2 test USDC payment was a pre-event mechanism test, not traction.
+- Remaining work: run all three policies on approved real records, obtain business review,
+  verify any testnet settlement, isolate the verifier under its own OS identity, and anchor the
+  decision log externally.
 
 ## License
 

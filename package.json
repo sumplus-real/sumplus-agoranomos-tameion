@@ -5,9 +5,13 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "test": "tsx tests/run.ts",
+    "test": "tsx tests/run.ts && tsx tests/import.ts && tsx tests/fixed-probe.ts && tsx tests/comparison.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "score:comparison": "tsx scripts/score-comparison.ts"
+    "score:comparison": "tsx scripts/score-comparison.ts",
+    "test:comparison": "tsx tests/comparison.ts",
+    "test:import": "tsx tests/import.ts",
+    "test:fixed-probe": "tsx tests/fixed-probe.ts",
+    "import:evidence": "tsx scripts/import-evidence.ts"
   },
   "dependencies": {
     "tsx": "^4.19.2",

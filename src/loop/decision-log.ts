@@ -20,7 +20,7 @@ export type DecisionEntry = {
   day: string;
   caseId: string | null;
   /** What happened: a measurement, an explanation, a probe chosen, a verdict revised, an action proposed. */
-  kind: "measured" | "explained" | "probe_chosen" | "probe_skipped" | "revised" | "proposed" | "escalated" | "executed";
+  kind: "measured" | "explained" | "probe_chosen" | "probe_skipped" | "probe_result" | "probe_failed" | "revised" | "proposed" | "escalated" | "executed";
   /** Who did it: deterministic code, the reasoning model, the verifier, the contract, or a person. */
   by: "code" | "model" | "verifier" | "contract" | "person";
   summary: string;

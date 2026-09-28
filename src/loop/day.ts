@@ -1,4 +1,4 @@
-import type { CaseRecord, Inference, ObservedFact } from "../evidence/case.js";
+import { canonicalJson, type CaseRecord, type Inference, type ObservedFact } from "../evidence/case.js";
 import { append } from "./decision-log.js";
 
 /**
@@ -44,6 +44,8 @@ export type Discrepancy = {
   observed: ObservedFact[];
   /** What the observed layer alone supports, as a range. */
   interval: Inference;
+  /** Optional evidence package for a proposed action; the verifier still judges it independently. */
+  record?: CaseRecord;
 };
 
 export type Proposal = {
@@ -55,6 +57,8 @@ export type Proposal = {
 
 export interface Policy {
   readonly name: string;
+  /** The actual decision maker. A deterministic adaptive rule is code, not a model. */
+  readonly by?: "code" | "model";
   /** Explain a discrepancy under the current hypotheses. */
   explain(d: Discrepancy, hypotheses: Hypothesis[]): { summary: string; hypotheses: Hypothesis[] };
   /** Pick the next probes within the day's budget, or none. */
@@ -82,14 +86,17 @@ export class FixedPolicy implements Policy {
   }
 
   propose(d: Discrepancy): Proposal {
-    const settled = d.interval.lowMicro === d.interval.highMicro;
+    const settled = d.interval.lowMicro === d.interval.highMicro && d.interval.lowMicro > 0;
+    const recordMatches = !!d.record && d.record.caseId === d.caseId && d.record.observed.length > 0 &&
+      canonicalJson(d.record.observed.map(canonicalJson).sort()) === canonicalJson(d.observed.map(canonicalJson).sort());
+    const candidate = settled && recordMatches;
     return {
       caseId: d.caseId,
-      action: settled ? "pay" : "no_action",
-      record: null,
-      reason: settled
-        ? "the observed range is a single value"
-        : "the observed range is open; left for a person",
+      action: candidate ? "pay" : "no_action",
+      record: candidate ? d.record! : null,
+      reason: candidate
+        ? "candidate only: observed range is a single value; independent verifier must determine the ceiling"
+        : "the observed range or matching case record is incomplete; left for a person",
     };
   }
 }
@@ -102,20 +109,56 @@ export type DayInput = {
   probeOptions: ProbeOption[];
   hypotheses: Hypothesis[];
   probeBudgetMicro: number;
+  /** Omit to recommend probes only, with no external calls or spending. */
+  executeProbe?: ProbeExecutor;
 };
 
 export type DayResult = {
   proposals: Proposal[];
   probesChosen: ProbeOption[];
+  probesExecuted: number;
+  /** Null means the executor failed after external cost may have been incurred. */
+  probeSpentMicro: number | null;
   escalations: number;
 };
 
+export type ProbeOutcome =
+  | {
+      status: "observed";
+      caseId: string;
+      /** New observed facts, with source and reference, returned by the executor. */
+      addedFacts: ObservedFact[];
+      /** Optional revised estimate, based on the new facts. */
+      interval?: Inference;
+      /** Optional revised, explicit support ranges. */
+      hypotheses?: Hypothesis[];
+      /** A new matching record is required before a changed case can be proposed. */
+      record?: CaseRecord;
+      actualCostMicro: number;
+      reason: string;
+    }
+  | { status: "failed"; caseId: string; actualCostMicro: number; reason: string };
+
+/** The caller enforces the quoted cost at its external gateway. This loop makes no calls itself. */
+export type ProbeExecutor = (option: ProbeOption, budgetRemainingMicro: number) => ProbeOutcome;
+
 export function runDay(input: DayInput): DayResult {
   const { day, logPath, policy } = input;
+  if (!Number.isSafeInteger(input.probeBudgetMicro) || input.probeBudgetMicro < 0) {
+    throw new Error("probe budget must be a nonnegative integer");
+  }
+  const options = input.probeOptions;
+  if (options.some((p) => !Number.isSafeInteger(p.costMicro) || p.costMicro < 0)) {
+    throw new Error("probe cost must be a nonnegative integer");
+  }
+  if (new Set(options.map((p) => p.id)).size !== options.length) {
+    throw new Error("probe option IDs must be unique");
+  }
   let hypotheses = input.hypotheses;
-  const proposals: Proposal[] = [];
+  const cases = input.discrepancies.map((d) => ({ ...d, observed: [...d.observed] }));
+  const blocked = new Set<string>();
 
-  for (const d of input.discrepancies) {
+  for (const d of cases) {
     append(logPath, {
       day,
       caseId: d.caseId,
@@ -131,42 +174,141 @@ export function runDay(input: DayInput): DayResult {
       day,
       caseId: d.caseId,
       kind: "explained",
-      by: policy.name === "fixed" ? "code" : "model",
+      by: policy.by ?? "code",
       summary: explained.summary,
       detail: { policy: policy.name, hypotheses: hypotheses.map((h) => ({ id: h.id, support: h.support })) },
     });
 
-    const proposal = policy.propose(d, hypotheses);
-    proposals.push(proposal);
-    append(logPath, {
-      day,
-      caseId: d.caseId,
-      kind: proposal.action === "no_action" ? "escalated" : "proposed",
-      by: policy.name === "fixed" ? "code" : "model",
-      summary: `${proposal.action}: ${proposal.reason}`,
-      detail: { policy: policy.name },
-    });
   }
 
-  const probes = policy.chooseProbes(input.probeOptions, hypotheses, input.probeBudgetMicro);
-  const spent = probes.chosen.reduce((s, p) => s + p.costMicro, 0);
-  if (spent > input.probeBudgetMicro) {
+  const probes = policy.chooseProbes(options, hypotheses, input.probeBudgetMicro);
+  const known = new Map(options.map((p) => [p.id, p]));
+  if (new Set(probes.chosen.map((p) => p.id)).size !== probes.chosen.length ||
+      probes.chosen.some((p) => known.get(p.id) !== p)) {
+    throw new Error(`policy ${policy.name} chose an unknown or duplicate probe`);
+  }
+  const quoted = probes.chosen.reduce((s, p) => s + p.costMicro, 0);
+  if (quoted > input.probeBudgetMicro) {
     // The budget is also enforced where the agent cannot reach it, at the
     // gateway key that pays for probes. This is the second, earlier refusal.
-    throw new Error(`policy ${policy.name} chose ${spent} of probes against a budget of ${input.probeBudgetMicro}`);
+    throw new Error(`policy ${policy.name} chose ${quoted} of probes against a budget of ${input.probeBudgetMicro}`);
   }
   append(logPath, {
     day,
     caseId: null,
     kind: probes.chosen.length ? "probe_chosen" : "probe_skipped",
-    by: policy.name === "fixed" ? "code" : "model",
+    by: policy.by ?? "code",
     summary: probes.reason,
-    detail: { chosen: probes.chosen.map((p) => p.id), spentMicro: spent, budgetMicro: input.probeBudgetMicro },
+    detail: { chosen: probes.chosen.map((p) => p.id), quotedMicro: quoted, spentMicro: 0, budgetMicro: input.probeBudgetMicro },
   });
+
+  let spent = 0;
+  let executed = 0;
+  let costUnknown = false;
+  for (const option of probes.chosen) {
+    const affected = cases.filter((d) => d.line === option.line);
+    affected.forEach((d) => blocked.add(d.caseId));
+    if (costUnknown) {
+      append(logPath, {
+        day, caseId: null, kind: "probe_skipped", by: "code",
+        summary: `${option.id}: execution halted after an uncertain probe cost`,
+        detail: { probeId: option.id, line: option.line, actualCostMicro: "unknown" },
+      });
+      continue;
+    }
+    if (!input.executeProbe) {
+      append(logPath, {
+        day, caseId: null, kind: "probe_skipped", by: "code",
+        summary: `${option.id}: no executor supplied; evidence remains pending`,
+        detail: { probeId: option.id, line: option.line, spentMicro: 0 },
+      });
+      continue;
+    }
+    let reportedCost: number | "unknown" = "unknown";
+    try {
+      const outcome = input.executeProbe(option, input.probeBudgetMicro - spent);
+      reportedCost = outcome.actualCostMicro;
+      const target = affected.find((d) => d.caseId === outcome.caseId);
+      if (!target) throw new Error("probe result names no matching case on this line");
+      if (!Number.isSafeInteger(outcome.actualCostMicro) || outcome.actualCostMicro < 0 ||
+          outcome.actualCostMicro > option.costMicro || spent + outcome.actualCostMicro > input.probeBudgetMicro) {
+        throw new Error("probe result exceeds its quote or the day's budget");
+      }
+      spent += outcome.actualCostMicro;
+      if (outcome.status === "failed") {
+        blocked.add(target.caseId);
+        append(logPath, {
+          day, caseId: target.caseId, kind: "probe_failed", by: "code",
+          summary: `${option.id}: ${outcome.reason}`,
+          detail: { probeId: option.id, actualCostMicro: outcome.actualCostMicro },
+        });
+        continue;
+      }
+      if (outcome.interval && outcome.addedFacts.length === 0) {
+        throw new Error("a revised interval requires newly observed facts");
+      }
+      if (outcome.addedFacts.some((f) => !f.source || !f.ref)) {
+        throw new Error("probe facts require source and reference");
+      }
+      const observed = [...target.observed, ...outcome.addedFacts];
+      if (outcome.record) {
+        if (outcome.record.caseId !== target.caseId ||
+            canonicalJson(outcome.record.observed.map(canonicalJson).sort()) !== canonicalJson(observed.map(canonicalJson).sort())) {
+          throw new Error("probe record does not match the revised observed facts");
+        }
+        target.record = outcome.record;
+      } else if (outcome.addedFacts.length > 0) {
+        // Never submit an old evidence package after facts have changed.
+        target.record = undefined;
+      }
+      target.observed = observed;
+      if (outcome.interval) target.interval = outcome.interval;
+      if (outcome.hypotheses) hypotheses = outcome.hypotheses;
+      executed += 1;
+      blocked.delete(target.caseId);
+      append(logPath, {
+        day, caseId: target.caseId, kind: "probe_result", by: "code",
+        summary: `${option.id}: ${outcome.reason}`,
+        detail: { probeId: option.id, actualCostMicro: outcome.actualCostMicro, addedFacts: outcome.addedFacts.map((f) => ({ source: f.source, ref: f.ref })) },
+      });
+      const revised = policy.explain(target, hypotheses);
+      hypotheses = revised.hypotheses;
+      append(logPath, {
+        day, caseId: target.caseId, kind: "revised", by: policy.by ?? "code",
+        summary: revised.summary,
+        detail: { policy: policy.name, interval: target.interval, hypotheses: hypotheses.map((h) => ({ id: h.id, support: h.support })) },
+      });
+    } catch (error) {
+      costUnknown = true;
+      append(logPath, {
+        day, caseId: null, kind: "probe_failed", by: "code",
+        summary: `${option.id}: executor result rejected or failed`,
+        detail: { probeId: option.id, reason: String(error), reportedCostMicro: reportedCost, actualCostMicro: "unknown" },
+      });
+    }
+  }
+
+  const proposals: Proposal[] = [];
+  for (const d of cases) {
+    const proposal = blocked.has(d.caseId)
+      ? { caseId: d.caseId, action: "no_action" as const, record: null, reason: "probe pending or failed; human review required" }
+      : policy.propose(d, hypotheses);
+    proposals.push(proposal);
+    append(logPath, {
+      day,
+      caseId: d.caseId,
+      kind: proposal.action === "no_action" ? "escalated" : "proposed",
+      by: policy.by ?? "code",
+      summary: `${proposal.action}: ${proposal.reason}`,
+      detail: { policy: policy.name },
+    });
+  }
 
   return {
     proposals,
     probesChosen: probes.chosen,
+    probesExecuted: executed,
+    probeSpentMicro: costUnknown ? null : spent,
     escalations: proposals.filter((p) => p.action === "no_action").length,
   };
 }

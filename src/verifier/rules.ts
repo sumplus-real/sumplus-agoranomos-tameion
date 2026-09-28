@@ -4,10 +4,12 @@ import type {
   DeliveryMeasured,
   DeliveryUnmeasurable,
   JobFailed,
+  ObservedFact,
   TenantDebit,
   UpstreamOrder,
   VendorCharge,
 } from "../evidence/case.js";
+import { canonicalJson } from "../evidence/case.js";
 
 /**
  * The verifier's rules, version 1.
@@ -62,8 +64,22 @@ export function judge(record: CaseRecord, registry: PayeeRegistry): Verdict {
 
 function duplicateCharge(record: CaseRecord, payee: Address): Verdict {
   const orders = record.observed.filter((f): f is UpstreamOrder => f.kind === "upstream_order");
-  const byFingerprint = new Map<string, UpstreamOrder[]>();
+  if (orders.some((o) => !positiveSafeAmount(o.chargedMicro))) {
+    return { sign: false, reasons: ["an observed order has an invalid charge amount"] };
+  }
+  if (orders.some((o) => !Number.isSafeInteger(o.submittedAtMs) || o.submittedAtMs < 0)) {
+    return { sign: false, reasons: ["an observed order has an invalid submission timestamp"] };
+  }
+  const byTask = new Map<string, UpstreamOrder>();
   for (const o of orders) {
+    const previous = byTask.get(o.taskId);
+    if (previous && canonicalJson(previous) !== canonicalJson(o)) {
+      return { sign: false, reasons: [`conflicting observations for task ${o.taskId}`] };
+    }
+    byTask.set(o.taskId, o);
+  }
+  const byFingerprint = new Map<string, UpstreamOrder[]>();
+  for (const o of byTask.values()) {
     byFingerprint.set(o.requestFingerprint, [...(byFingerprint.get(o.requestFingerprint) ?? []), o]);
   }
 
@@ -77,7 +93,9 @@ function duplicateCharge(record: CaseRecord, payee: Address): Verdict {
     for (const later of sorted.slice(1)) {
       if (later.taskId === first.taskId) continue;
       if (later.submittedAtMs - first.submittedAtMs > DUPLICATE_WINDOW_MS) continue;
-      if (later.chargedMicro <= 0) continue;
+      if (!Number.isSafeInteger(maxMicro + later.chargedMicro)) {
+        return { sign: false, reasons: ["duplicate charge sum exceeds the safe integer range"] };
+      }
       // The first order is the one that was asked for. Every later one with
       // the same fingerprint inside the window is the same work, paid again.
       maxMicro += later.chargedMicro;
@@ -92,17 +110,37 @@ function duplicateCharge(record: CaseRecord, payee: Address): Verdict {
 }
 
 function payUndisputed(record: CaseRecord, payee: Address): Verdict {
-  const charges = record.observed.filter((f): f is VendorCharge => f.kind === "vendor_charge");
-  const measured = new Map(
-    record.observed
-      .filter((f): f is DeliveryMeasured => f.kind === "delivery_measured")
-      .map((f) => [f.jobRef, f]),
-  );
+  const charges = uniqueRows(record.observed.filter((f): f is VendorCharge => f.kind === "vendor_charge"));
+  if (!charges) return { sign: false, reasons: ["conflicting vendor charge rows share a source and reference"] };
+  if (charges.some((c) => !positiveSafeAmount(c.chargedMicro))) {
+    return { sign: false, reasons: ["an observed vendor charge has an invalid amount"] };
+  }
+  if (charges.some((c) => !Number.isFinite(c.billedSeconds) || c.billedSeconds <= 0)) {
+    return { sign: false, reasons: ["an observed vendor charge has an invalid billed duration"] };
+  }
+  if (new Set(charges.map((c) => c.jobRef)).size !== charges.length) {
+    return { sign: false, reasons: ["multiple vendor charges name one job without an explicit multi-charge rule"] };
+  }
+  const measurements = record.observed.filter((f): f is DeliveryMeasured => f.kind === "delivery_measured");
+  if (measurements.some((m) => !Number.isFinite(m.measuredSeconds) || m.measuredSeconds < 0)) {
+    return { sign: false, reasons: ["a delivery measurement has an invalid duration"] };
+  }
+  const measured = new Map<string, DeliveryMeasured>();
+  for (const m of measurements) {
+    const previous = measured.get(m.jobRef);
+    if (previous && canonicalJson(previous) !== canonicalJson(m)) {
+      return { sign: false, reasons: [`conflicting delivery measurements for job ${m.jobRef}`] };
+    }
+    measured.set(m.jobRef, m);
+  }
   const unmeasurable = new Set(
     record.observed
       .filter((f): f is DeliveryUnmeasurable => f.kind === "delivery_unmeasurable")
       .map((f) => f.jobRef),
   );
+  if ([...measured.keys()].some((jobRef) => unmeasurable.has(jobRef))) {
+    return { sign: false, reasons: ["the same delivery is both measured and unmeasurable"] };
+  }
 
   let maxMicro = 0;
   const basis: string[] = [];
@@ -121,6 +159,9 @@ function payUndisputed(record: CaseRecord, payee: Address): Verdict {
       withheld.push(`${c.ref}: billed ${c.billedSeconds}s, delivered ${m.measuredSeconds}s`);
       continue;
     }
+    if (!Number.isSafeInteger(maxMicro + c.chargedMicro)) {
+      return { sign: false, reasons: ["vendor charge sum exceeds the safe integer range"] };
+    }
     maxMicro += c.chargedMicro;
     basis.push(`${c.ref}: billed ${c.billedSeconds}s, delivered ${m.measuredSeconds}s`);
   }
@@ -132,7 +173,11 @@ function payUndisputed(record: CaseRecord, payee: Address): Verdict {
 }
 
 function tenantCredit(record: CaseRecord, payee: Address): Verdict {
-  const debits = record.observed.filter((f): f is TenantDebit => f.kind === "tenant_debit");
+  const debits = uniqueRows(record.observed.filter((f): f is TenantDebit => f.kind === "tenant_debit"));
+  if (!debits) return { sign: false, reasons: ["conflicting tenant debit rows share a source and reference"] };
+  if (debits.some((d) => !positiveSafeAmount(d.debitedMicro))) {
+    return { sign: false, reasons: ["an observed tenant debit has an invalid amount"] };
+  }
   const failed = new Set(
     record.observed.filter((f): f is JobFailed => f.kind === "job_failed").map((f) => f.jobRef),
   );
@@ -142,6 +187,9 @@ function tenantCredit(record: CaseRecord, payee: Address): Verdict {
   const notCredited: string[] = [];
   for (const d of debits) {
     if (failed.has(d.jobRef)) {
+      if (!Number.isSafeInteger(maxMicro + d.debitedMicro)) {
+        return { sign: false, reasons: ["tenant debit sum exceeds the safe integer range"] };
+      }
       maxMicro += d.debitedMicro;
       basis.push(`${d.ref}: debited ${d.debitedMicro} for a job recorded as failed`);
     } else {
@@ -153,4 +201,20 @@ function tenantCredit(record: CaseRecord, payee: Address): Verdict {
     return { sign: false, reasons: notCredited.length ? notCredited : ["no debits in this case"] };
   }
   return { sign: true, maxMicro, payee, basis };
+}
+
+function positiveSafeAmount(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+/** Repeated ingestion of one raw row is not another charge or debit. */
+function uniqueRows<T extends ObservedFact>(rows: T[]): T[] | null {
+  const byReference = new Map<string, T>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.source, row.ref]);
+    const previous = byReference.get(key);
+    if (previous && canonicalJson(previous) !== canonicalJson(row)) return null;
+    byReference.set(key, row);
+  }
+  return [...byReference.values()];
 }

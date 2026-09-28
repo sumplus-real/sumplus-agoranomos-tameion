@@ -1,19 +1,28 @@
 # Prospective comparison criteria · fixed on 2026-09-27
 
-Compare three policies on the same real cases on the same day: `fixed`,
+Compare three policies on the same case-days: `fixed`,
 `fixed_probe`, and `adaptive`. Only `adaptive` may submit a transaction. The
 other policies are counterfactual decisions, not claims that their proposed
 payments happened.
 
-The unit of analysis is one `(day, caseId, policy)` decision. Include every
-case opened during the study window, including cases held, escalated, or later
-found wrong. A case-day is scored only when all three policies have a row.
-Missing rows fail the scorer instead of shrinking a denominator silently.
+The unit of analysis is one `(day, caseId, policy)` decision. The input has a
+`caseDays` manifest and a `rows` array. Add every case opened during the
+study window to the manifest, including cases held, escalated, or later found
+wrong. Each manifest entry names `day`, `caseId`, `caseClass`
+(`real_business`, `self_test`, or `synthetic`), `factSnapshotHash`, and
+`sourceRefs`. The hash is lowercase SHA-256 of a canonical, frozen snapshot
+of facts available **before** the policy decisions. Retain that snapshot
+privately for audit; do not put raw customer data in this JSON or a public repo.
+The manifest must be reconciled against the intake log because a scorer cannot
+detect an entire case omitted from both files. A case-day is scored only when
+all three policies have a row. Missing rows fail the scorer instead of
+shrinking a denominator silently.
 
 Each input row must carry:
 
-- `day` (ISO date), `caseId`, `policy`, and `evidenceRefs` linking to the
-  decision log, source measurements, and any human review;
+- `day` (ISO date), `caseId`, `policy`, `factSnapshotHash` identical to
+  the manifest, and `evidenceRefs` linking to the decision log, source
+  measurements, and any human review;
 - `probeCount` and `probeCostMicro`, both nonnegative integers. Cost is the
   actual amount charged for evidence collection in micro-USDC, excluding
   settlement principal and chain gas. Free probes count as probes with zero
@@ -43,7 +52,17 @@ Report, for each policy:
 
 The three policies get identical input facts available at the decision time.
 Later facts may adjudicate a conclusion but must not be fed back into the
-earlier decision. Report case counts and missing adjudications beside any
-comparison. No metric is a success claim until activity-period data exist.
+earlier decision. Report each case class separately: self-test and synthetic
+cases are not real-business traction. Counterfactual policies cannot claim
+actual human time or payments unless these occurred; use `null` for
+unmeasured time. The scorer checks schema, pairing, shared snapshot hashes,
+and arithmetic but cannot authenticate the underlying records or prove that
+the three policies actually received the same facts. Audit the referenced
+records before making an external claim. Report case counts and missing
+adjudications beside any comparison. No metric is a success claim until
+activity-period data exist.
 
-Run `npm run score:comparison -- path/to/rows.json` on a JSON array of rows.
+Run `npm run score:comparison -- path/to/comparison.json` on the object
+containing `caseDays` and `rows`. Empty manifests, missing policy rows,
+invalid dates, duplicate rows, mismatched snapshot hashes, and unsafe sums
+fail rather than produce a misleading result.
