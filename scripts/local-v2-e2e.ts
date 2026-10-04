@@ -64,5 +64,5 @@ try {
  await ownerCall('reject', [d.attestation.caseId]);
  assert.equal(await client.readContract({ address: token, abi: tokenArtifact.abi, functionName: 'balanceOf', args: [payee] }), 300000n);
  assert.equal(await client.readContract({ address: contract, abi: settlementArtifact.abi, functionName: 'paid', args: [d.attestation.caseId] }), 0n);
- console.log(JSON.stringify({ network: 'local-only', synthetic: true, ruleLabel: RULE_LABEL, paidMicro: 300000, autonomousMicro: 200000, approvedMicro: 100000, humanRejectedMicro: 100000, rejectedControls: 6, publicDeployment: false }));
+ console.log(JSON.stringify({ network: 'local-only', synthetic: true, ruleLabel: RULE_LABEL, paidMicro: 300000, autonomousMicro: 200000, approvedMicro: 100000, humanRejectedMicro: 100000, rejectedControls: 6, controls: ['missing business intent', 'intentional regeneration', 'wrong payee', 'above attested ceiling', 'intent replay', 'pending overwrite'], publicDeployment: false }));
 } finally { proc.kill('SIGTERM'); }

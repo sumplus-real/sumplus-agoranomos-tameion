@@ -18,7 +18,9 @@
     "checkpoint:log": "tsx scripts/checkpoint-log.ts",
     "test:local-v2": "forge build --root contracts && tsx scripts/local-v2-e2e.ts",
     "agent:isolated": "tsx scripts/isolate-agent.ts",
-    "prepare:arc-upgrade": "forge build --root contracts && tsx scripts/prepare-arc-upgrade.ts"
+    "prepare:arc-upgrade": "forge build --root contracts && tsx scripts/prepare-arc-upgrade.ts",
+    "prepare:arc-budget": "forge build --root contracts && tsx scripts/prepare-arc-budget.ts",
+    "prepare:review-package": "tsx scripts/prepare-review-package.ts"
   },
   "dependencies": {
     "tsx": "^4.19.2",

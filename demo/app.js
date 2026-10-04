@@ -14,5 +14,19 @@ function render(data) {
  r.strategies.forEach(s=>{const card=el('article',null,'card'); card.append(el('small',s.id),el('h3',({fixed:'Fixed rules',fixed_probe:'Fixed probes',adaptive:'Adaptive rules'})[s.id]??s.label),el('div',`${s.passed} / ${s.attempts}`,'metric'),el('p','Cases passing the verifier. This is not an accuracy or success rate.'),el('span',`New external replay spend: $${s.totalCost/1e6} · CPU excluded`,'tag'));const scored=r.score?.cohorts?.flatMap(c=>c.policies??[]).find(p=>p.policy===s.id);if(scored)card.append(el('p',`Captured evidence reads: ${scored.evidence.probeCount} · new external probe spend: ${scored.evidence.probeCostMicro} micro-units. CPU excluded.`));s.decisions.forEach(d=>{card.append(el('p',`${r.cases.find(c=>c.id===d.caseId)?.label ?? d.caseId} · ${d.action} · ${d.verifierSign?'Signature permitted':'No signature'}\n${d.reason}`))});$('#strategies').append(card)});
  $('#raw').textContent=JSON.stringify(r,null,2);
 }
-async function refresh(){try{const res=await fetch('/api/report');if(!res.ok)throw new Error('Local report unavailable or invalid.');render(await res.json())}catch(e){$('#mode').className='notice error';$('#mode').textContent=e.message;$('#cases').replaceChildren();$('#strategies').replaceChildren();$('#raw').textContent='';$('#disclosure').textContent='';$('#count').textContent='';}}
+async function refresh(){try{const res=await fetch(window.AGORA_REPORT_URL ?? './api/report');if(!res.ok)throw new Error('Local report unavailable or invalid.');render(await res.json())}catch(e){$('#mode').className='notice error';$('#mode').textContent=e.message;$('#cases').replaceChildren();$('#strategies').replaceChildren();$('#raw').textContent='';$('#disclosure').textContent='';$('#count').textContent='';}}
 document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.panel').forEach(p=>p.hidden=p.id!==button.dataset.tab);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b===button))}));$('#refresh').addEventListener('click',refresh);refresh();
+
+async function loadMechanism(){
+ try {
+  const response=await fetch(window.AGORA_MECHANISM_URL ?? './api/mechanism');
+  if(!response.ok)throw new Error('Mechanism report unavailable.');
+  const r=await response.json();
+  if(r.synthetic!==true||r.publicDeployment!==false||r.network!=='local-only')throw new Error('Expected an explicitly synthetic local mechanism report.');
+  const fields=[['Autonomous payment',r.autonomousMicro],['Human-approved payment',r.approvedMicro],['Human-rejected proposal',r.humanRejectedMicro]];
+  const out=$('#mechanism-results');out.replaceChildren();
+  for(const [label,n] of fields){if(!Number.isSafeInteger(n)||n<0)throw new Error('Invalid local mechanism amounts.');const c=el('article',null,'card');c.append(el('small','LOCAL MOCK UNITS'),el('h3',label),el('div',(n/1e6).toFixed(2),'metric'),el('p','Synthetic mechanism fixture; no real business debt.'),el('span',r.ruleLabel,'tag'));out.append(c)}
+  const controls=el('article',null,'card');controls.append(el('small','REJECTION CONTROLS'),el('h3',`${r.rejectedControls} refused paths`),el('p',(r.controls??[]).join(' · ')));out.append(controls);
+ }catch(e){$('#mechanism-results').replaceChildren(el('p',e.message,'error'))}
+}
+loadMechanism();
