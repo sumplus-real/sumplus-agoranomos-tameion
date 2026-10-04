@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
+import { keccak256, toBytes } from "viem";
 import { ATTESTATION_TYPES, attestationDomain, type Attestation } from "../chain/settlement.js";
 import { evidenceHash, type CaseRecord } from "../evidence/case.js";
 import { judge, RULE_LABEL, type PayeeRegistry } from "./rules.js";
@@ -47,6 +48,8 @@ export type SignedAttestation = {
 export type SignOutcome = { signed: true; result: SignedAttestation } | { signed: false; reasons: string[] };
 
 export async function signCase(req: SignRequest, key: Hex = loadVerifierKey()): Promise<SignOutcome> {
+  if (req.ruleVersion !== keccak256(toBytes(RULE_LABEL))) return { signed: false, reasons: ["requested rule version does not match the verifier's implemented rules"] };
+  if (!Number.isSafeInteger(req.ttlSeconds) || req.ttlSeconds <= 0 || req.ttlSeconds > 3600) return { signed: false, reasons: ["attestation TTL must be between 1 and 3600 seconds"] };
   const verdict = judge(req.record, req.registry);
   if (!verdict.sign) return { signed: false, reasons: verdict.reasons };
 

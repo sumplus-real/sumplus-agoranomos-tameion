@@ -12,7 +12,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hashTypedData, recoverTypedDataAddress, type Address, type Hex } from "viem";
+import { keccak256, toBytes, hashTypedData, recoverTypedDataAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ATTESTATION_TYPES, attestationDomain } from "../src/chain/settlement.js";
 import { caseIdFor, evidenceHash, type CaseRecord, type UpstreamOrder } from "../src/evidence/case.js";
@@ -188,7 +188,9 @@ async function main() {
   const verifierAddress = privateKeyToAccount(verifierKey).address;
   const contract: Address = "0xc8e1dc15F42c04EaF5Eab03C5A82C8Abc4aB01d2";
   const token: Address = "0x3600000000000000000000000000000000000000";
-  const rules: Hex = "0x49b5c5936b16ec2a73f5dd855c266a1270422828f0681571d35ba195f745aa2b";
+  const rules: Hex = keccak256(toBytes(RULE_LABEL));
+  const wrongRules = await signCase({ record: base, registry, chainId: 5042002, contract, token, ruleVersion: keccak256(toBytes("old-rules")), ttlSeconds: 3600 }, verifierKey);
+  check("a v2 verifier refuses to attest under another rule version", !wrongRules.signed);
   const out = await signCase({ record: base, registry, chainId: 5042002, contract, token, ruleVersion: rules, ttlSeconds: 3600, nowSeconds: 1_700_000_000 }, verifierKey);
   check("a case the rules accept is signed", out.signed === true);
   if (out.signed) {

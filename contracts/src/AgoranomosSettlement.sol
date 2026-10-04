@@ -93,6 +93,9 @@ contract AgoranomosSettlement {
     mapping(uint256 => uint256) public spentInPeriod;
     mapping(uint256 => mapping(address => uint256)) public payeeSpentInPeriod;
     mapping(bytes32 => Pending) public pending;
+    mapping(bytes32 => uint64) public pendingExpiry;
+    mapping(bytes32 => bytes32) public pendingRule;
+    mapping(bytes32 => address) public pendingVerifier;
 
     bool private entered;
 
@@ -126,6 +129,8 @@ contract AgoranomosSettlement {
 
     // ---------------------------------------------------------------- errors
 
+    error InvalidRoles();
+    error PendingPolicyRevoked();
     error NotOwner();
     error NotAgent();
     error ForgedAttestation();
@@ -138,6 +143,7 @@ contract AgoranomosSettlement {
     error ExceedsPeriodBudget(uint256 spent, uint256 requested, uint256 budget);
     error IntentAlreadyUsed(uint256 expected, uint256 given);
     error NothingPending();
+    error PendingAlreadyOpen();
     error ZeroAmount();
     error Reentrant();
     error TransferFailed();
@@ -173,6 +179,7 @@ contract AgoranomosSettlement {
         uint256 periodBudget_,
         uint256 escalationThreshold_
     ) {
+        _checkRoles(owner_, agent_, verifier_);
         token = IERC20(token_);
         owner = owner_;
         agent = agent_;
@@ -209,6 +216,7 @@ contract AgoranomosSettlement {
     }
 
     function setRoles(address owner_, address agent_, address verifier_) external onlyOwner {
+        _checkRoles(owner_, agent_, verifier_);
         owner = owner_;
         agent = agent_;
         verifier = verifier_;
@@ -269,6 +277,8 @@ contract AgoranomosSettlement {
         uint256 spent = spentInPeriod[period];
         if (spent + amount > periodBudget) revert ExceedsPeriodBudget(spent, amount, periodBudget);
 
+        if (pending[a.caseId].open) revert PendingAlreadyOpen();
+
         // Reserve the amount against the case now, whether it is paid or
         // parked, so a second proposal for the same case cannot slip in while
         // the first one waits for a person.
@@ -284,6 +294,9 @@ contract AgoranomosSettlement {
                 reasoningHash: reasoningHash,
                 open: true
             });
+            pendingExpiry[a.caseId] = a.expiry;
+            pendingRule[a.caseId] = a.ruleVersion;
+            pendingVerifier[a.caseId] = verifier;
             emit Escalated(a.caseId, a.payee, intentSeq, amount, payeeSpent, a.evidenceHash, reasoningHash);
             return;
         }
@@ -299,7 +312,13 @@ contract AgoranomosSettlement {
     function approve(bytes32 caseId) external onlyOwner nonReentrant {
         Pending memory p = pending[caseId];
         if (!p.open) revert NothingPending();
+        if (block.timestamp > pendingExpiry[caseId]) revert AttestationExpired();
+        if (!allowedPayee[p.payee]) revert PayeeNotAllowed();
+        if (pendingRule[caseId] != ruleVersion || pendingVerifier[caseId] != verifier) revert PendingPolicyRevoked();
         delete pending[caseId];
+        delete pendingExpiry[caseId];
+        delete pendingRule[caseId];
+        delete pendingVerifier[caseId];
 
         uint256 period = currentPeriod();
         uint256 spent = spentInPeriod[period];
@@ -319,11 +338,19 @@ contract AgoranomosSettlement {
         Pending memory p = pending[caseId];
         if (!p.open) revert NothingPending();
         delete pending[caseId];
+        delete pendingExpiry[caseId];
+        delete pendingRule[caseId];
+        delete pendingVerifier[caseId];
         paid[caseId] -= p.amount;
         emit Rejected(caseId, msg.sender);
     }
 
     // -------------------------------------------------------------- internal
+
+    function _checkRoles(address owner_, address agent_, address verifier_) internal pure {
+        if (owner_ == address(0) || agent_ == address(0) || verifier_ == address(0)
+            || owner_ == agent_ || owner_ == verifier_ || agent_ == verifier_) revert InvalidRoles();
+    }
 
     function _verify(Attestation calldata a, bytes calldata signature) internal view {
         if (block.timestamp > a.expiry) revert AttestationExpired();

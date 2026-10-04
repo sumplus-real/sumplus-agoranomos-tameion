@@ -438,4 +438,105 @@ contract AgoranomosSettlementTest is Test {
         vm.expectRevert(AgoranomosSettlement.MalleableSignature.selector);
         settlement.settle(a, abi.encodePacked(r, highS, flippedV), 40e6, 0, bytes32(0));
     }
+    function test_pendingCannotBeOverwrittenByNextIntent() public {
+        AgoranomosSettlement.Attestation memory a = _att("pending-overwrite", supplier, 300e6);
+        bytes memory sig = _sign(verifierKey, a);
+        _settle(a, sig, 150e6);
+        vm.prank(agent);
+        vm.expectRevert(AgoranomosSettlement.PendingAlreadyOpen.selector);
+        settlement.settle(a, sig, 10e6, 1, keccak256("reasoning"));
+        (, , uint256 amount, , , bool open) = settlement.pending(a.caseId);
+        assertTrue(open);
+        assertEq(amount, 150e6);
+        assertEq(settlement.nextIntent(a.caseId), 1);
+        vm.prank(owner);
+        settlement.approve(a.caseId);
+        assertEq(usdc.balanceOf(supplier), 150e6);
+    }
+    function test_invalidRoleConfigurationRefused() public {
+        vm.prank(owner);
+        vm.expectRevert(AgoranomosSettlement.InvalidRoles.selector);
+        settlement.setRoles(owner, agent, address(0));
+        vm.prank(owner);
+        vm.expectRevert(AgoranomosSettlement.InvalidRoles.selector);
+        settlement.setRoles(owner, agent, agent);
+    }
+    function test_pendingApprovalRefusesRevokedPayee() public {
+        AgoranomosSettlement.Attestation memory a = _att("revoked-payee", supplier, 150e6);
+        _settle(a, _sign(verifierKey, a), 150e6);
+        vm.startPrank(owner);
+        settlement.setPayee(supplier, false);
+        vm.expectRevert(AgoranomosSettlement.PayeeNotAllowed.selector);
+        settlement.approve(a.caseId);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(supplier), 0);
+    }
+    function test_pendingApprovalRefusesExpiredProof() public {
+        AgoranomosSettlement.Attestation memory a = _att("expired-pending", supplier, 150e6);
+        _settle(a, _sign(verifierKey, a), 150e6);
+        vm.warp(uint256(a.expiry) + 1);
+        vm.prank(owner);
+        vm.expectRevert(AgoranomosSettlement.AttestationExpired.selector);
+        settlement.approve(a.caseId);
+    }
+    function test_pendingApprovalRefusesChangedRules() public {
+        AgoranomosSettlement.Attestation memory a = _att("changed-rules", supplier, 150e6);
+        _settle(a, _sign(verifierKey, a), 150e6);
+        vm.startPrank(owner);
+        settlement.setRuleVersion(keccak256("new-rules"));
+        vm.expectRevert(AgoranomosSettlement.PendingPolicyRevoked.selector);
+        settlement.approve(a.caseId);
+        vm.stopPrank();
+    }
+    function test_constructorRefusesZeroVerifier() public {
+        vm.expectRevert(AgoranomosSettlement.InvalidRoles.selector);
+        new AgoranomosSettlement(address(usdc), owner, agent, address(0), RULES, PERIOD, BUDGET, THRESHOLD);
+    }
+
+    function test_pendingVerifierRotationRefusesApprovalAndRejectRecovers() public {
+        AgoranomosSettlement.Attestation memory a = _att("rotated-verifier", supplier, 150e6);
+        _settle(a, _sign(verifierKey, a), 150e6);
+        uint256 newVerifierKey = 0xC0FFEE;
+        vm.startPrank(owner);
+        settlement.setRoles(owner, agent, vm.addr(newVerifierKey));
+        vm.expectRevert(AgoranomosSettlement.PendingPolicyRevoked.selector);
+        settlement.approve(a.caseId);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(supplier), 0);
+        assertEq(settlement.paid(a.caseId), 150e6);
+        (, , , , , bool open) = settlement.pending(a.caseId);
+        assertTrue(open);
+        vm.prank(owner);
+        settlement.reject(a.caseId);
+        assertEq(settlement.paid(a.caseId), 0);
+        assertEq(settlement.nextIntent(a.caseId), 1);
+        assertEq(settlement.pendingExpiry(a.caseId), 0);
+        assertEq(settlement.pendingRule(a.caseId), bytes32(0));
+        assertEq(settlement.pendingVerifier(a.caseId), address(0));
+        bytes memory freshSignature = _sign(newVerifierKey, a);
+        vm.prank(agent);
+        vm.expectRevert(abi.encodeWithSelector(AgoranomosSettlement.IntentAlreadyUsed.selector, 1, 0));
+        settlement.settle(a, freshSignature, 50e6, 0, bytes32(0));
+        _settle(a, freshSignature, 50e6);
+        assertEq(usdc.balanceOf(supplier), 50e6);
+        assertEq(settlement.paid(a.caseId), 50e6);
+        assertEq(settlement.nextIntent(a.caseId), 2);
+    }
+
+    function test_expiredPendingRejectAllowsFreshProofAndIntent() public {
+        AgoranomosSettlement.Attestation memory a = _att("expired-recovery", supplier, 150e6);
+        _settle(a, _sign(verifierKey, a), 150e6);
+        vm.warp(uint256(a.expiry) + 1);
+        vm.startPrank(owner);
+        vm.expectRevert(AgoranomosSettlement.AttestationExpired.selector);
+        settlement.approve(a.caseId);
+        settlement.reject(a.caseId);
+        vm.stopPrank();
+        assertEq(settlement.paid(a.caseId), 0);
+        assertEq(settlement.nextIntent(a.caseId), 1);
+        a.expiry = uint64(vm.getBlockTimestamp() + 1 hours);
+        _settle(a, _sign(verifierKey, a), 50e6);
+        assertEq(usdc.balanceOf(supplier), 50e6);
+        assertEq(settlement.nextIntent(a.caseId), 2);
+    }
 }

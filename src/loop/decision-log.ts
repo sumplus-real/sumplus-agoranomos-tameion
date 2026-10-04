@@ -20,7 +20,7 @@ export type DecisionEntry = {
   day: string;
   caseId: string | null;
   /** What happened: a measurement, an explanation, a probe chosen, a verdict revised, an action proposed. */
-  kind: "measured" | "explained" | "probe_chosen" | "probe_skipped" | "probe_result" | "probe_failed" | "revised" | "proposed" | "escalated" | "executed";
+  kind: "measured" | "explained" | "probe_chosen" | "probe_skipped" | "probe_result" | "probe_failed" | "revised" | "proposed" | "escalated" | "executed" | "reviewed";
   /** Who did it: deterministic code, the reasoning model, the verifier, the contract, or a person. */
   by: "code" | "model" | "verifier" | "contract" | "person";
   summary: string;
@@ -63,7 +63,7 @@ export function append(
     prevHash: prev ? prev.hash : GENESIS,
   };
   const full: DecisionEntry = { ...body, hash: hashOf(body) };
-  appendFileSync(path, `${JSON.stringify(full)}\n`);
+  appendFileSync(path, `${JSON.stringify(full)}\n`, { mode: 0o600 });
   return full;
 }
 

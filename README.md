@@ -145,9 +145,9 @@ published and the event branch is on `main`.
   both files.
 - The decision log is a hash chain. It shows an edit to any entry that later entries depend on,
   but whoever holds the whole file can rewrite the whole chain consistently.
-- Circle Wallets spending policies apply on mainnet only, so every limit here is enforced by the
-  contract.
-- All settlement is in Arc testnet USDC. It discharges no real debt.
+- Spending limits here are enforced by the settlement contract.
+- Historical public mechanism settlement is in Arc testnet USDC. Local EVM tests use mock
+  balances. Neither discharges real business debt.
 
 ## Event-period progress
 
@@ -173,6 +173,12 @@ published and the event branch is on `main`.
 - Remaining work: obtain business review,
   verify any testnet settlement, isolate the verifier under its own OS identity, and anchor the
   decision log externally.
+
+## October 4 local preparation
+
+Authenticated business confirmation/rejection and human review logs are implemented. The business signer requires a verified review scoped to the counterparty; this does not establish that a real business has used the product. The local contract now prevents pending-payment overwrite and rechecks expiry, payee revocation, rule changes and verifier rotation at approval. Zero or overlapping role addresses are refused. These changes are not deployed to Arc.
+
+Rules v2 refuse to sign under a different rule version. A disposable local EVM test runs the real TypeScript signer and Solidity contract with synthetic records. macOS sandbox protection and independently retained log checkpoints are available as local preparation, with their limits documented in `eval/business-review.md`. No external anchor or separate OS identities have been provisioned.
 
 ## License
 

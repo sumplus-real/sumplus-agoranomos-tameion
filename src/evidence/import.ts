@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { canonicalJson, type CaseRecord, type ObservedFact } from "./case.js";
+import { verifyBusinessReview, type BusinessReview, type TrustedReviewers } from "./review.js";
 
 export type SourceArtifact = {
   id: string;
@@ -18,6 +19,7 @@ export type EvidenceBundle = {
   authorizationRef?: string;
   /** Private reference to the business user's confirmation, if one exists. */
   confirmationRef?: string;
+  review?: BusinessReview;
   artifacts: SourceArtifact[];
   record: CaseRecord;
 };
@@ -44,7 +46,7 @@ export function factSnapshotHash(record: CaseRecord): string {
  * is truthful or that its owner approved publication; those remain human acts.
  * Raw exports and the bundle belong in ignored private-data/, not in git.
  */
-export function importEvidence(bundle: EvidenceBundle, baseDir: string): ImportResult {
+export function importEvidence(bundle: EvidenceBundle, baseDir: string, trustedReviewers: TrustedReviewers = {}): ImportResult {
   const errors: string[] = [];
   if (!bundle || !bundle.record || !Array.isArray(bundle.record.observed) || !Array.isArray(bundle.artifacts)) {
     return { ok: false, errors: ["missing record, observed facts, or artifacts"] };
@@ -52,6 +54,7 @@ export function importEvidence(bundle: EvidenceBundle, baseDir: string): ImportR
   if (!/^(synthetic|self_test|business_unconfirmed|business_confirmed|historical_replay)$/.test(bundle.status)) errors.push("invalid evidence status");
   if ((bundle.status.startsWith("business") || bundle.status === "historical_replay") && !bundle.authorizationRef?.trim()) errors.push("business data requires an authorization reference");
   if (bundle.status === "business_confirmed" && !bundle.confirmationRef?.trim()) errors.push("confirmed business use requires a confirmation reference");
+  if (bundle.status === "business_confirmed" || bundle.review) errors.push(...verifyBusinessReview(bundle, trustedReviewers));
   if (!bundle.record.observed.length) errors.push("case has no observed facts");
   if (!/^0x[0-9a-fA-F]{64}$/.test(bundle.record.caseId)) errors.push("invalid case ID");
   if (!["duplicate_charge_refund", "pay_undisputed", "tenant_credit_undelivered"].includes(bundle.record.kind)) errors.push("invalid case kind");

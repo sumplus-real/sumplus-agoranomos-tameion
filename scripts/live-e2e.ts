@@ -18,6 +18,8 @@ import {
   createPublicClient,
   createWalletClient,
   hashTypedData,
+  keccak256,
+  toBytes,
   http,
   parseEther,
   type Address,
@@ -35,11 +37,13 @@ import {
   type Attestation,
 } from "../src/chain/settlement.js";
 import { caseIdFor, type CaseRecord } from "../src/evidence/case.js";
+import { RULE_LABEL } from "../src/verifier/rules.js";
 import { signCase } from "../src/verifier/sign.js";
 import { simulate, submit } from "../src/agent/submit.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
+if (process.env.BROADCAST_TESTNET !== "1") throw new Error("live mechanism test is disabled; use local-v2-e2e for reversible preparation. Arc broadcasts require explicit authorization and BROADCAST_TESTNET=1");
 
 function envValue(file: string, key: string): string {
   const line = readFileSync(join(ROOT, file), "utf8").split("\n").find((l) => l.startsWith(`${key}=`));
@@ -67,6 +71,7 @@ async function ownerTx(label: string, request: Parameters<typeof ownerWallet.wri
 async function main() {
   console.log(`contract ${SETTLEMENT_ADDRESS}`);
   const ruleVersion = (await publicClient.readContract({ address: SETTLEMENT_ADDRESS, abi: SETTLEMENT_ABI, functionName: "ruleVersion" })) as Hex;
+  if (ruleVersion !== keccak256(toBytes(RULE_LABEL))) throw new Error("deployed contract uses another rule version; prepare an owner-reviewed update before any setup or payment");
   const onchainVerifier = await publicClient.readContract({ address: SETTLEMENT_ADDRESS, abi: SETTLEMENT_ABI, functionName: "verifier" });
   console.log(`verifier on chain ${onchainVerifier}`);
 
@@ -97,6 +102,7 @@ async function main() {
     observed: [
       { kind: "upstream_order", source: "mechanism-test", ref: "o1", taskId: `t1-${run}`, requestFingerprint: `fp-${run}`, submittedAtMs: 1_000, chargedMicro: 500_000 },
       { kind: "upstream_order", source: "mechanism-test", ref: "o2", taskId: `t2-${run}`, requestFingerprint: `fp-${run}`, submittedAtMs: 4_000, chargedMicro: 500_000 },
+      { kind: "duplicate_intent_assessment", source: "mechanism-test", ref: "synthetic-intent", intentId: `intent-${run}`, originalTaskId: `t1-${run}`, repeatedTaskId: `t2-${run}`, outcome: "confirmed_duplicate" },
     ],
     contract: [],
     inference: [],
