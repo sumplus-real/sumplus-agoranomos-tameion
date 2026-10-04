@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 const target=resolve(process.argv[2]??'../tameion/review-candidate-20261004');
+const head=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+if(execFileSync('git',['rev-parse','main'],{encoding:'utf8'}).trim()!==head)throw Error('Candidate main must include the current delivered HEAD; refuse stale source packaging');
 if(existsSync(target))throw Error('Preserve existing candidate; choose a new directory');
 mkdirSync(target,{recursive:true});
 const repo=join(target,'source-history');mkdirSync(repo);
