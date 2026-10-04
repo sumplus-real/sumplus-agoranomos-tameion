@@ -1,0 +1,19 @@
+{
+  "network": "local-only",
+  "synthetic": true,
+  "ruleLabel": "agoranomos-rules-v2",
+  "paidMicro": 300000,
+  "autonomousMicro": 200000,
+  "approvedMicro": 100000,
+  "humanRejectedMicro": 100000,
+  "rejectedControls": 6,
+  "controls": [
+    "missing business intent",
+    "intentional regeneration",
+    "wrong payee",
+    "above attested ceiling",
+    "intent replay",
+    "pending overwrite"
+  ],
+  "publicDeployment": false
+}
