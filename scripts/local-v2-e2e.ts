@@ -2,7 +2,7 @@
 /** Synthetic mechanism test on disposable local EVM. No real keys or external RPC. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createPublicClient, createWalletClient, http, keccak256, toBytes, type Address, type Hex } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
@@ -64,5 +64,8 @@ try {
  await ownerCall('reject', [d.attestation.caseId]);
  assert.equal(await client.readContract({ address: token, abi: tokenArtifact.abi, functionName: 'balanceOf', args: [payee] }), 300000n);
  assert.equal(await client.readContract({ address: contract, abi: settlementArtifact.abi, functionName: 'paid', args: [d.attestation.caseId] }), 0n);
- console.log(JSON.stringify({ network: 'local-only', synthetic: true, ruleLabel: RULE_LABEL, paidMicro: 300000, autonomousMicro: 200000, approvedMicro: 100000, humanRejectedMicro: 100000, rejectedControls: 6, controls: ['missing business intent', 'intentional regeneration', 'wrong payee', 'above attested ceiling', 'intent replay', 'pending overwrite'], publicDeployment: false }));
+ const report = { network: 'local-only', synthetic: true, ruleLabel: RULE_LABEL, paidMicro: 300000, autonomousMicro: 200000, approvedMicro: 100000, humanRejectedMicro: 100000, rejectedControls: 6, controls: ['missing business intent', 'intentional regeneration', 'wrong payee', 'above attested ceiling', 'intent replay', 'pending overwrite'], publicDeployment: false };
+ mkdirSync('private-data', { recursive: true });
+ writeFileSync('private-data/local-v2-report.json', JSON.stringify(report, null, 2)+'\n', { mode: 0o600 });
+ console.log(JSON.stringify(report));
 } finally { proc.kill('SIGTERM'); }

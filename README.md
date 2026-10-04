@@ -6,6 +6,19 @@ and the contract enforces limits the agent cannot change.
 
 Built for the Tameion Agents Hackathon (Canteen × Circle).
 
+## Review locally
+
+Use Node.js 20+, npm, Foundry (`forge` and `anvil`), and ffmpeg/ffprobe. Install npm dependencies
+with `npm ci` and the pinned forge-std dependency described in `contracts/README.md`.
+Run `npm test`, `npm run typecheck`, and `forge test --root contracts`. Then
+`npm run test:local-v2` generates a synthetic local mechanism report and
+`npm run demo` opens a loopback-only demonstration at http://127.0.0.1:4173.
+No real keys, external payments, private evidence or Arc transactions are needed for this path.
+The page presents synthetic examples when a private historical report is absent. Its fourth tab
+shows the actual local v2 test result. Published review packages use only the synthetic mode.
+The historical Arc contract below is unchanged; the patched approval code is not deployed there.
+
+
 ## The problem
 
 Sumplus runs an AI gateway. It buys model and video capacity from upstream suppliers and
@@ -59,7 +72,7 @@ measured is reported as unmeasurable, never as zero seconds.
 Every step of the daily loop is appended to a hash-chained log that records who took it:
 code, model, verifier, contract or person.
 
-## Live on Arc testnet
+## Pre-event Arc baseline (read-only)
 
 | What | Where |
 |---|---|
@@ -98,15 +111,15 @@ npm run replay:evidence -- private-data/replay/manifest.json
 npm run demo                     # local review UI at http://127.0.0.1:4173
 
 cd contracts
-forge install foundry-rs/forge-std --no-git
-forge test                        # 27 tests, including the attack and control cases
+forge install foundry-rs/forge-std@v1.16.2 --no-git
+forge test                        # 35 tests, including the attack and control cases
 ```
 
 The live mechanism test needs three local key files (`.deployer.env`, `.agent.env`,
 `.verifier.env`, each holding one `*_PRIVATE_KEY=` line) funded with Arc testnet USDC:
 
 ```bash
-npx tsx scripts/live-e2e.ts
+npm run prepare:arc-budget        # read-only unsigned preparation
 ```
 
 Key files are ignored by git. The agent's code never reads the verifier's key file, and a test
@@ -117,7 +130,7 @@ fails if it does.
 ```
 contracts/src/AgoranomosSettlement.sol   settlement contract
 contracts/test/                          Foundry tests: limits, attacks, controls
-src/verifier/                            rules (v1) and signing, separate from the agent
+src/verifier/                            rules (v2) and signing, separate from the agent
 src/agent/submit.ts                      the agent's only way to move money
 src/evidence/case.ts                     case records and the evidence hash
 src/evidence/import.ts                   source-backed private case intake

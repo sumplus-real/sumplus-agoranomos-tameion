@@ -20,7 +20,8 @@
     "agent:isolated": "tsx scripts/isolate-agent.ts",
     "prepare:arc-upgrade": "forge build --root contracts && tsx scripts/prepare-arc-upgrade.ts",
     "prepare:arc-budget": "forge build --root contracts && tsx scripts/prepare-arc-budget.ts",
-    "prepare:review-package": "tsx scripts/prepare-review-package.ts"
+    "prepare:review-package": "tsx scripts/prepare-review-package.ts",
+    "prepare:arc-anchor": "tsx scripts/prepare-arc-anchor.ts"
   },
   "dependencies": {
     "tsx": "^4.19.2",

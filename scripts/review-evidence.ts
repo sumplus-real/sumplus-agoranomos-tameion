@@ -1,7 +1,8 @@
 #!/usr/bin/env tsx
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { canonicalJson } from "../src/evidence/case.js";
 import { importEvidence, type EvidenceBundle } from "../src/evidence/import.js";
 import { reviewPayload, type BusinessReview, type TrustedReviewers } from "../src/evidence/review.js";
 import { append, readLog, verify } from "../src/loop/decision-log.js";
@@ -18,10 +19,27 @@ const reviewed: EvidenceBundle = { ...bundle, review, status: review.outcome ===
 const result = importEvidence(reviewed, dirname(path), trust);
 if (!result.ok) throw new Error(result.errors.join("; "));
 const logPath = resolve(dirname(path), "human-reviews.jsonl");
-const log = readLog(logPath);
-if (!verify(log).ok) throw new Error("existing human review log is invalid");
-const reviewHash = createHash("sha256").update(reviewPayload(review) + review.signature).digest("hex");
-if (log.some(e => e.detail.reviewHash === reviewHash)) throw new Error("this business review has already been recorded");
-writeFileSync(resolve(outputFile), JSON.stringify(reviewed, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-append(logPath, { day: review.reviewedAt.slice(0, 10), caseId: result.record.caseId, kind: "reviewed", by: "person", summary: `Business review ${review.outcome}`, detail: { reviewHash, bundleHash: review.bundleHash, reviewerId: review.reviewerId, outcome: review.outcome, sourceRef: review.sourceRef, humanSeconds: review.humanSeconds }, at: review.reviewedAt });
-console.log(JSON.stringify({ caseId: result.record.caseId, status: result.status, outcome: review.outcome, humanSeconds: review.humanSeconds, paymentAuthorized: false }));
+const lock = resolve(dirname(path), ".human-reviews.lock");
+// Directory creation is atomic: concurrent writers fail closed. Never silently remove another writer's lock.
+mkdirSync(lock, { mode: 0o700 });
+try {
+  const log = readLog(logPath);
+  if (!verify(log).ok) throw new Error("existing human review log is invalid");
+  const reviewHash = createHash("sha256").update(reviewPayload(review) + review.signature).digest("hex");
+  const journalPath = resolve(dirname(path), `.review-${reviewHash}.journal.json`);
+  const outputPath = resolve(outputFile);
+  const journal = { version: 1, outputPath, reviewed };
+  if (existsSync(journalPath)) {
+    if (canonicalJson(JSON.parse(readFileSync(journalPath, "utf8"))) !== canonicalJson(journal)) throw new Error("review recovery journal differs from the requested output");
+  } else {
+    if (log.some(e => e.detail.reviewHash === reviewHash)) throw new Error("this business review has already been recorded");
+    writeFileSync(journalPath, JSON.stringify(journal, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+  }
+  if (existsSync(outputPath)) {
+    if (canonicalJson(JSON.parse(readFileSync(outputPath, "utf8"))) !== canonicalJson(reviewed)) throw new Error("existing reviewed output differs; original preserved");
+  } else writeFileSync(outputPath, JSON.stringify(reviewed, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+  if (process.env.REVIEW_TEST_FAIL_AFTER_OUTPUT === "1") throw new Error("diagnostic interruption after output, before log append");
+  const recorded = log.some(e => e.detail.reviewHash === reviewHash);
+  if (!recorded) append(logPath, { day: review.reviewedAt.slice(0, 10), caseId: result.record.caseId, kind: "reviewed", by: "person", summary: `Business review ${review.outcome}`, detail: { reviewHash, bundleHash: review.bundleHash, reviewerId: review.reviewerId, outcome: review.outcome, sourceRef: review.sourceRef, humanSeconds: review.humanSeconds }, at: review.reviewedAt });
+  console.log(JSON.stringify({ caseId: result.record.caseId, status: result.status, outcome: review.outcome, humanSeconds: review.humanSeconds, alreadyRecorded: recorded, paymentAuthorized: false }));
+} finally { rmSync(lock, { recursive: true }); }
